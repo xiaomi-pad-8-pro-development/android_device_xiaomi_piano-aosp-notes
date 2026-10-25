@@ -12,6 +12,7 @@ from Xiaomi Notes and does not read or modify Xiaomi's private database.
 - Save and reopen notes on device
 - Delete notes with a confirmation step
 - Stylus pressure-aware drawing through Android `MotionEvent`
+- Stroke erasing with touch mode or the stylus eraser end, plus Undo and Clear
 - SQLite storage owned by this app
 - Database upgrades fail closed until a preserving schema migration is implemented
 - Android Auto Backup rules for the app database, including cloud backup and device transfer

@@ -342,6 +342,12 @@ public final class NotesActivity extends Activity {
             Button undo = button("Undo");
             undo.setOnClickListener(v -> ink.undo());
             actions.addView(undo, weight());
+            Button eraser = button("Eraser off");
+            eraser.setOnClickListener(v -> {
+                ink.setEraserEnabled(!ink.isEraserEnabled());
+                eraser.setText(ink.isEraserEnabled() ? "Eraser on" : "Eraser off");
+            });
+            actions.addView(eraser, weight());
             Button clear = button("Clear");
             clear.setOnClickListener(v -> ink.clear());
             actions.addView(clear, weight());
@@ -472,6 +478,8 @@ public final class NotesActivity extends Activity {
         private Stroke active;
         private int activePointerId = MotionEvent.INVALID_POINTER_ID;
         private int activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+        private boolean eraserEnabled;
+        private boolean erasingGesture;
 
         InkView(Activity context, Runnable onChanged) {
             super(context);
@@ -534,15 +542,23 @@ public final class NotesActivity extends Activity {
             int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
                 if (!insidePage(event.getX(0), event.getY(0))) return false;
-                active = new Stroke();
                 activePointerId = event.getPointerId(0);
                 activeToolType = event.getToolType(0);
-                addPoint(event, 0, 0, false);
-                invalidate();
-                onChanged.run();
+                erasingGesture = eraserEnabled || activeToolType == MotionEvent.TOOL_TYPE_ERASER;
+                if (erasingGesture) {
+                    if (eraseAt(event.getX(0), event.getY(0))) {
+                        invalidate();
+                        onChanged.run();
+                    }
+                } else {
+                    active = new Stroke();
+                    addPoint(event, 0, 0, false);
+                    invalidate();
+                    onChanged.run();
+                }
                 return true;
             }
-            if (active == null) return false;
+            if (active == null && !erasingGesture) return false;
             if (action == MotionEvent.ACTION_POINTER_DOWN) {
                 int pointerIndex = event.getActionIndex();
                 int toolType = event.getToolType(pointerIndex);
@@ -550,19 +566,46 @@ public final class NotesActivity extends Activity {
                         && (toolType == MotionEvent.TOOL_TYPE_STYLUS
                         || toolType == MotionEvent.TOOL_TYPE_ERASER)
                         && insidePage(event.getX(pointerIndex), event.getY(pointerIndex))) {
-                    // Prefer the stylus if a palm/finger made the first contact.
-                    active = new Stroke();
+                    // Preserve the initial touch stroke and prefer the stylus if
+                    // a palm/finger made first contact.
+                    if (active != null && active.points.length() > 0) {
+                        strokes.add(active);
+                    }
                     activePointerId = event.getPointerId(pointerIndex);
                     activeToolType = toolType;
-                    addPoint(event, pointerIndex, 0, false);
+                    erasingGesture = eraserEnabled || toolType == MotionEvent.TOOL_TYPE_ERASER;
+                    if (erasingGesture) {
+                        active = null;
+                        if (eraseAt(event.getX(pointerIndex), event.getY(pointerIndex))) {
+                            onChanged.run();
+                        }
+                    } else {
+                        active = new Stroke();
+                        addPoint(event, pointerIndex, 0, false);
+                        onChanged.run();
+                    }
                     invalidate();
-                    onChanged.run();
                 }
                 return true;
             }
             if (action == MotionEvent.ACTION_MOVE) {
                 int pointerIndex = event.findPointerIndex(activePointerId);
                 if (pointerIndex < 0) return true;
+                if (erasingGesture) {
+                    boolean changed = false;
+                    for (int i = 0; i < event.getHistorySize(); i++) {
+                        if (eraseAt(event.getHistoricalX(pointerIndex, i),
+                                event.getHistoricalY(pointerIndex, i))) changed = true;
+                    }
+                    if (eraseAt(event.getX(pointerIndex), event.getY(pointerIndex))) {
+                        changed = true;
+                    }
+                    if (changed) {
+                        invalidate();
+                        onChanged.run();
+                    }
+                    return true;
+                }
                 for (int i = 0; i < event.getHistorySize(); i++) {
                     addPoint(event, pointerIndex, i, true);
                 }
@@ -574,11 +617,14 @@ public final class NotesActivity extends Activity {
             if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) {
                 int pointerIndex = event.getActionIndex();
                 if (event.getPointerId(pointerIndex) == activePointerId) {
-                    addPoint(event, pointerIndex, 0, false);
-                    strokes.add(active);
+                    if (!erasingGesture && active != null) {
+                        addPoint(event, pointerIndex, 0, false);
+                        strokes.add(active);
+                    }
                     active = null;
                     activePointerId = MotionEvent.INVALID_POINTER_ID;
                     activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+                    erasingGesture = false;
                 }
                 invalidate();
                 onChanged.run();
@@ -588,10 +634,11 @@ public final class NotesActivity extends Activity {
                 // Android may cancel a pointer when the app loses focus or the
                 // stylus leaves the view. Keep the points already received so
                 // an autosave does not silently discard part of the note.
-                if (active.points.length() > 0) strokes.add(active);
+                if (active != null && active.points.length() > 0) strokes.add(active);
                 active = null;
                 activePointerId = MotionEvent.INVALID_POINTER_ID;
                 activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+                erasingGesture = false;
                 invalidate();
                 onChanged.run();
                 return true;
@@ -628,6 +675,66 @@ public final class NotesActivity extends Activity {
             float scale = pageScale();
             float top = (getHeight() - PAGE_HEIGHT * scale) / 2f;
             return Math.max(0f, Math.min(PAGE_HEIGHT, (y - top) / scale));
+        }
+
+        private boolean eraseAt(float screenX, float screenY) {
+            if (!insidePage(screenX, screenY)) return false;
+            float x = toPageX(screenX);
+            float y = toPageY(screenY);
+            float radius = 22f / pageScale();
+            float radiusSquared = radius * radius;
+            for (int i = strokes.size() - 1; i >= 0; i--) {
+                if (strokeWithinRadius(strokes.get(i), x, y, radiusSquared)) {
+                    strokes.remove(i);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean strokeWithinRadius(Stroke stroke, float x, float y,
+                float radiusSquared) {
+            if (stroke.points.length() == 1) {
+                JSONObject point = stroke.points.optJSONObject(0);
+                return point != null && distanceSquared(x, y,
+                        (float) point.optDouble("x"), (float) point.optDouble("y"))
+                        <= radiusSquared;
+            }
+            for (int i = 1; i < stroke.points.length(); i++) {
+                JSONObject first = stroke.points.optJSONObject(i - 1);
+                JSONObject second = stroke.points.optJSONObject(i);
+                if (first == null || second == null) continue;
+                if (segmentDistanceSquared(x, y,
+                        (float) first.optDouble("x"), (float) first.optDouble("y"),
+                        (float) second.optDouble("x"), (float) second.optDouble("y"))
+                        <= radiusSquared) return true;
+            }
+            return false;
+        }
+
+        private float segmentDistanceSquared(float x, float y, float x1, float y1,
+                float x2, float y2) {
+            float dx = x2 - x1;
+            float dy = y2 - y1;
+            float lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared == 0f) return distanceSquared(x, y, x1, y1);
+            float position = ((x - x1) * dx + (y - y1) * dy) / lengthSquared;
+            position = Math.max(0f, Math.min(1f, position));
+            return distanceSquared(x, y, x1 + position * dx, y1 + position * dy);
+        }
+
+        private float distanceSquared(float x1, float y1, float x2, float y2) {
+            float dx = x1 - x2;
+            float dy = y1 - y2;
+            return dx * dx + dy * dy;
+        }
+
+        void setEraserEnabled(boolean enabled) {
+            eraserEnabled = enabled;
+        }
+
+        boolean isEraserEnabled() {
+            return eraserEnabled;
         }
 
         private void addPoint(float x, float y, float pressure) {
