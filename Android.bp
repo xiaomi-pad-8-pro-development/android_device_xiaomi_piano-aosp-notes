@@ -1,0 +1,12 @@
+android_app {
+    name: "PianoAospNotes",
+    manifest: "AndroidManifest.xml",
+    srcs: ["src/**/*.java"],
+    sdk_version: "current",
+    min_sdk_version: "29",
+    target_sdk_version: "36",
+    java_version: "17",
+    // Use the product default certificate so release signing follows the ROM.
+    privileged: false,
+    platform_apis: false,
+}

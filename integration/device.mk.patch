@@ -1,0 +1,8 @@
+diff --git a/device.mk b/device.mk
+--- a/device.mk
++++ b/device.mk
+@@ -463,3 +463,4 @@
+ # Optional trees, included when synced
++$(call inherit-product-if-exists, device/xiaomi/piano-aosp-notes/notes.mk)
+ $(call inherit-product-if-exists, device/xiaomi/piano-alxp-parts/alxpparts.mk)
+ $(call inherit-product-if-exists, device/xiaomi/piano-patches/patches.mk)

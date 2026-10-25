@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Optional, needs piano.xml: clean-room AOSP Notes app. -->
+<manifest>
+  <project name="android_device_xiaomi_piano-aosp-notes" path="device/xiaomi/piano-aosp-notes" remote="piano" />
+</manifest>
