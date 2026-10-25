@@ -42,8 +42,8 @@ and does not request privileged permissions.
 
 Android Auto Backup includes only `piano_notes.db`. Google-account restore
 depends on Google Backup being enabled, Google's backup transport being
-available, Android's backup schedule and restore choice, and installing this
-app on the destination device. The app ID
+available, Android's backup schedule and restore choice, and using the same
+Google account and backup dataset on the destination device. The app ID
 `org.lineageos.pianonotes` and signing certificate must remain the same between
 the source and destination builds; keep the release signing key stable across
 ROM releases and distribute the matching signed APK for installation on a

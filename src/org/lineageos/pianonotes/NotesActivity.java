@@ -221,9 +221,10 @@ public final class NotesActivity extends Activity {
                         + "Android Auto Backup can include this app's notes database in your "
                         + "Google account backup. Android controls when backups run, so this "
                         + "screen cannot confirm that a backup has completed. On a replacement "
-                        + "phone, install the same app package signed with the same certificate "
-                        + "before restoring. For a portable copy, use Export backup; large "
-                        + "libraries may exceed the cloud backup quota.")
+                        + "phone, use the same Google account and backup dataset. Android "
+                        + "restores app data when this same package, signed with the same "
+                        + "certificate, is installed. For a portable copy, use Export backup; "
+                        + "large libraries may exceed the cloud backup quota.")
                 .setNegativeButton("Close", null)
                 .setPositiveButton("Open Settings", (dialog, which) -> {
                     try {
