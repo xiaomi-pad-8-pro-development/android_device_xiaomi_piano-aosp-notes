@@ -510,7 +510,8 @@ public final class NotesActivity extends Activity {
                 JSONObject a = stroke.points.optJSONObject(i - 1);
                 JSONObject b = stroke.points.optJSONObject(i);
                 if (a == null || b == null) continue;
-                paint.setStrokeWidth(Math.max(1.0f, (float) b.optDouble("p", 0.5) * 5.0f));
+                double pressure = b.optDouble("p", 0.5);
+                paint.setStrokeWidth((float) Math.max(1.0, Math.min(12.0, pressure * 5.0)));
                 canvas.drawLine((float) a.optDouble("x"), (float) a.optDouble("y"),
                         (float) b.optDouble("x"), (float) b.optDouble("y"), paint);
             }
@@ -520,7 +521,9 @@ public final class NotesActivity extends Activity {
                     float x = (float) p.optDouble("x");
                     float y = (float) p.optDouble("y");
                     paint.setStyle(android.graphics.Paint.Style.FILL);
-                    canvas.drawCircle(x, y, Math.max(1f, (float) p.optDouble("p", .5) * 2.5f), paint);
+                    double pressure = p.optDouble("p", .5);
+                    float radius = (float) Math.max(1.0, Math.min(6.0, pressure * 2.5));
+                    canvas.drawCircle(x, y, radius, paint);
                     paint.setStyle(android.graphics.Paint.Style.STROKE);
                 }
             }

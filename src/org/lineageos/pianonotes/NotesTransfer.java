@@ -168,7 +168,7 @@ final class NotesTransfer {
                 if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(pressure)
                         || x < 0 || x > NotesActivity.InkView.PAGE_WIDTH
                         || y < 0 || y > NotesActivity.InkView.PAGE_HEIGHT
-                        || pressure < 0 || pressure > 1) {
+                        || pressure < 0) {
                     throw new IOException("The backup contains invalid ink data.");
                 }
             }
