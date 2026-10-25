@@ -217,13 +217,13 @@ public final class NotesActivity extends Activity {
     private void showBackupInfo() {
         new AlertDialog.Builder(this)
                 .setTitle("Android backup and restore")
-                .setMessage("Android Auto Backup can include this app's notes database when "
-                        + "device backup is enabled and a compatible backup service is active. "
-                        + "Android controls when backups run, so this screen cannot confirm "
-                        + "that a backup has completed. On a replacement phone, install the "
-                        + "same app package signed with the same certificate before restoring. "
-                        + "For a portable copy, use Export backup; large libraries may exceed "
-                        + "the cloud backup quota.")
+                .setMessage("When Google Backup is enabled and its backup service is active, "
+                        + "Android Auto Backup can include this app's notes database in your "
+                        + "Google account backup. Android controls when backups run, so this "
+                        + "screen cannot confirm that a backup has completed. On a replacement "
+                        + "phone, install the same app package signed with the same certificate "
+                        + "before restoring. For a portable copy, use Export backup; large "
+                        + "libraries may exceed the cloud backup quota.")
                 .setNegativeButton("Close", null)
                 .setPositiveButton("Open Settings", (dialog, which) -> {
                     try {

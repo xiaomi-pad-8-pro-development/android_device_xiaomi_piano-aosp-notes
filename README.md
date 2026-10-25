@@ -40,9 +40,10 @@ that release certificate stable and install an APK signed with that same
 certificate on the replacement phone. The app uses public Android SDK APIs
 and does not request privileged permissions.
 
-Android Auto Backup includes only `piano_notes.db`. Cloud restore depends on the
-user enabling an Android backup transport, the system's backup schedule and
-restore choice, and installing this app on the destination device. The app ID
+Android Auto Backup includes only `piano_notes.db`. Google-account restore
+depends on Google Backup being enabled, Google's backup transport being
+available, Android's backup schedule and restore choice, and installing this
+app on the destination device. The app ID
 `org.lineageos.pianonotes` and signing certificate must remain the same between
 the source and destination builds; keep the release signing key stable across
 ROM releases and distribute the matching signed APK for installation on a
