@@ -30,9 +30,10 @@ This tree builds the `PianoAospNotes` Soong app. Sync it to
 `device/xiaomi/piano-aosp-notes`; copy
 `integration/optional/piano-aosp-notes.xml` to
 `.repo/local_manifests/optional/piano-aosp-notes.xml` and copy it to the
-top-level `.repo/local_manifests/` directory before `repo sync`. Apply the
-include line from `integration/device.mk.patch` to the device tree's optional
-includes. `notes.mk` adds the Soong namespace and app package. `Android.bp`
+top-level `.repo/local_manifests/` directory before `repo sync`. The piano
+`seventeen` device tree includes `notes.mk` when this optional tree is synced;
+`integration/device.mk.patch` records the one-line product include for other
+checkouts. `notes.mk` adds the Soong namespace and app package. `Android.bp`
 intentionally leaves `certificate` unset so Soong uses the product default
 certificate and the ROM release-signing flow can apply its release key. Keep
 that release certificate stable and install an APK signed with that same
