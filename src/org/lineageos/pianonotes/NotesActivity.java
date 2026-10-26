@@ -20,6 +20,7 @@ import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.HorizontalScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -51,11 +52,14 @@ public final class NotesActivity extends Activity {
     private static final String STATE_NOTE_ID = "note_id";
     private static final String STATE_DRAWING = "drawing";
     private static final String STATE_LIST_SCROLL = "list_scroll";
+    private static final String STATE_FILTER = "filter";
+    private static final String STATE_SEARCH = "search";
     private static final int MENU_SAVE = 1;
     private static final int MENU_DELETE = 2;
     private static final int MENU_EXPORT = 3;
     private static final int MENU_IMPORT = 4;
     private static final int MENU_BACKUP_INFO = 5;
+    private static final int MENU_SEARCH = 6;
     private NoteStore store;
     private LinearLayout root;
     private MaterialToolbar toolbar;
@@ -67,6 +71,8 @@ public final class NotesActivity extends Activity {
     private boolean transferRunning;
     private int listScrollY;
     private ScrollView noteListScroll;
+    private String activeFilter = "All";
+    private String searchQuery = "";
     private Handler autosaveHandler;
     private String lastSavedTitle = "";
     private String lastSavedBody = "";
@@ -110,6 +116,10 @@ public final class NotesActivity extends Activity {
         store = new NoteStore(this);
         autosaveHandler = new Handler(Looper.getMainLooper());
         if (state != null) listScrollY = state.getInt(STATE_LIST_SCROLL, 0);
+        if (state != null) {
+            activeFilter = state.getString(STATE_FILTER, "All");
+            searchQuery = state.getString(STATE_SEARCH, "");
+        }
         if (state != null && state.getBoolean(STATE_EDITOR, false)) {
             long restoredId = state.getLong(STATE_NOTE_ID, -1);
             NoteStore.Note note = restoredId < 0 ? null : store.get(restoredId);
@@ -133,6 +143,8 @@ public final class NotesActivity extends Activity {
         state.putBoolean(STATE_DRAWING, drawing);
         state.putInt(STATE_LIST_SCROLL, noteListScroll == null
                 ? listScrollY : noteListScroll.getScrollY());
+        state.putString(STATE_FILTER, activeFilter);
+        state.putString(STATE_SEARCH, searchQuery);
         super.onSaveInstanceState(state);
     }
 
@@ -140,7 +152,7 @@ public final class NotesActivity extends Activity {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(materialColor(
-                com.google.android.material.R.attr.colorSurface, Color.WHITE));
+                com.google.android.material.R.attr.colorSurface, 0xfff7f4f0));
         setContentView(root);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
@@ -153,6 +165,7 @@ public final class NotesActivity extends Activity {
         toolbar = new MaterialToolbar(this);
         toolbar.setTitle(heading);
         toolbar.setTitleCentered(false);
+        toolbar.setBackgroundColor(Color.TRANSPARENT);
         root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
         ViewCompat.requestApplyInsets(root);
     }
@@ -173,10 +186,14 @@ public final class NotesActivity extends Activity {
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_BACKUP_INFO, 2, "Automatic backup")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_SEARCH, 3, "Search notes")
+                .setIcon(android.R.drawable.ic_menu_search)
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
         toolbar.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == MENU_EXPORT) chooseExportDestination();
             else if (item.getItemId() == MENU_IMPORT) confirmImport();
             else if (item.getItemId() == MENU_BACKUP_INFO) showBackupInfo();
+            else if (item.getItemId() == MENU_SEARCH) showSearchDialog();
             else return false;
             return true;
         });
@@ -194,10 +211,18 @@ public final class NotesActivity extends Activity {
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         MaterialButton text = button("Text note");
+        text.setIconResource(R.drawable.ic_note_add_24);
+        text.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
+        text.setIconPadding(dp(10));
+        text.setCornerRadius(dp(30));
         text.setOnClickListener(v -> {
             if (requireTransferIdle()) edit(null);
         });
         MaterialButton draw = button("Handwrite");
+        draw.setIconResource(R.drawable.ic_draw_24);
+        draw.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
+        draw.setIconPadding(dp(10));
+        draw.setCornerRadius(dp(30));
         draw.setBackgroundTintList(ColorStateList.valueOf(materialColor(
                 com.google.android.material.R.attr.colorSecondaryContainer, 0xffe6e0ec)));
         draw.setTextColor(materialColor(
@@ -208,6 +233,33 @@ public final class NotesActivity extends Activity {
         actions.addView(text, weightedButton());
         actions.addView(draw, weightedButton());
         content.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        HorizontalScrollView filters = new HorizontalScrollView(this);
+        filters.setHorizontalScrollBarEnabled(false);
+        LinearLayout chipRow = new LinearLayout(this);
+        chipRow.setOrientation(LinearLayout.HORIZONTAL);
+        String[] categories = {"All", "Text", "Handwriting"};
+        for (String category : categories) {
+            MaterialButton chip = button(category);
+            chip.setCheckable(true);
+            chip.setChecked(activeFilter.equals(category));
+            chip.setCornerRadius(dp(22));
+            chip.setStrokeWidth(0);
+            chip.setBackgroundTintList(ColorStateList.valueOf(activeFilter.equals(category)
+                    ? materialColor(com.google.android.material.R.attr.colorPrimaryContainer,
+                            0xffe8e1f2)
+                    : materialColor(com.google.android.material.R.attr.colorSurfaceContainerHigh,
+                            0xffece8f0)));
+            chip.setTextColor(materialColor(activeFilter.equals(category)
+                    ? com.google.android.material.R.attr.colorOnPrimaryContainer
+                    : com.google.android.material.R.attr.colorOnSurfaceVariant, 0xff544575));
+            LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, dp(44));
+            chipLp.setMargins(dp(4), dp(14), dp(6), dp(2));
+            chipRow.addView(chip, chipLp);
+            chip.setOnClickListener(v -> { activeFilter = category; showList(); });
+        }
+        filters.addView(chipRow);
+        content.addView(filters, new LinearLayout.LayoutParams(-1, -2));
 
         ScrollView scroll = new ScrollView(this);
         noteListScroll = scroll;
@@ -220,7 +272,16 @@ public final class NotesActivity extends Activity {
                 contentWidth(), -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         frame.addView(content, contentLp);
 
-        if (notes.isEmpty()) {
+        List<NoteStore.NoteSummary> visibleNotes = new ArrayList<>();
+        for (NoteStore.NoteSummary note : notes) {
+            if (activeFilter.equals("Text") && note.ink) continue;
+            if (activeFilter.equals("Handwriting") && !note.ink) continue;
+            String haystack = (note.title + " " + note.preview).toLowerCase(java.util.Locale.ROOT);
+            if (!searchQuery.isEmpty() && !haystack.contains(searchQuery.toLowerCase(
+                    java.util.Locale.ROOT))) continue;
+            visibleNotes.add(note);
+        }
+        if (visibleNotes.isEmpty()) {
             TextView section = textView("RECENT NOTES", 12,
                     materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
                             Color.GRAY));
@@ -264,8 +325,8 @@ public final class NotesActivity extends Activity {
             grid.setColumnCount(columns);
             grid.setUseDefaultMargins(false);
             content.addView(grid, new LinearLayout.LayoutParams(-1, -2));
-            for (int i = 0; i < notes.size(); i++) {
-                NoteStore.NoteSummary note = notes.get(i);
+            for (int i = 0; i < visibleNotes.size(); i++) {
+                NoteStore.NoteSummary note = visibleNotes.get(i);
                 GridLayout.LayoutParams cardLp = new GridLayout.LayoutParams(
                         GridLayout.spec(i / columns), GridLayout.spec(i % columns, 1f));
                 cardLp.width = 0;
@@ -277,8 +338,24 @@ public final class NotesActivity extends Activity {
         scroll.post(() -> scroll.scrollTo(0, listScrollY));
     }
 
+    private void showSearchDialog() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("Search titles and note text");
+        input.setText(searchQuery);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Search notes")
+                .setView(input, dp(24), dp(8), dp(24), 0)
+                .setNegativeButton("Clear", (dialog, which) -> { searchQuery = ""; showList(); })
+                .setPositiveButton("Search", (dialog, which) -> {
+                    searchQuery = input.getText().toString().trim(); showList();
+                }).show();
+    }
+
     private MaterialCardView noteCard(NoteStore.NoteSummary note) {
         MaterialCardView card = card();
+        card.setCardBackgroundColor(materialColor(
+                com.google.android.material.R.attr.colorSurfaceContainerLow, 0xfffffefd));
         card.setClickable(true);
         card.setFocusable(true);
         LinearLayout details = new LinearLayout(this);
@@ -289,12 +366,14 @@ public final class NotesActivity extends Activity {
                 materialColor(com.google.android.material.R.attr.colorPrimary,
                         Color.DKGRAY));
         type.setLetterSpacing(.08f);
+        type.setTypeface(type.getTypeface(), android.graphics.Typeface.BOLD);
         details.addView(type, new LinearLayout.LayoutParams(-1, -2));
 
         TextView title = textView(note.title.isEmpty() ? "Untitled" : note.title, 19,
                 materialColor(com.google.android.material.R.attr.colorOnSurface,
                         Color.DKGRAY));
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        title.setLetterSpacing(-.015f);
         title.setMaxLines(2);
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(-1, -2);
@@ -332,7 +411,7 @@ public final class NotesActivity extends Activity {
 
     private MaterialCardView card() {
         MaterialCardView card = new MaterialCardView(this);
-        card.setRadius(dp(26));
+        card.setRadius(dp(28));
         card.setCardElevation(0);
         card.setCardBackgroundColor(materialColor(
                 com.google.android.material.R.attr.colorSurfaceContainerLow, Color.WHITE));
@@ -483,6 +562,15 @@ public final class NotesActivity extends Activity {
         base(note == null ? "New note" : "Edit note");
         configureEditorToolbar();
 
+        TextView eyebrow = textView("YOUR THOUGHTS, IN ONE PLACE", 12,
+                materialColor(com.google.android.material.R.attr.colorPrimary, 0xff5e4b8b));
+        eyebrow.setLetterSpacing(.12f);
+        eyebrow.setTypeface(eyebrow.getTypeface(), android.graphics.Typeface.BOLD);
+        eyebrow.setPadding(dp(4), dp(4), dp(4), dp(12));
+        LinearLayout.LayoutParams eyebrowLp = new LinearLayout.LayoutParams(contentWidth(), -2);
+        eyebrowLp.gravity = Gravity.CENTER_HORIZONTAL;
+        root.addView(eyebrow, eyebrowLp);
+
         title = field("", note == null ? "" : note.title, false);
         TextInputLayout titleLayout = outlinedField("Title", title);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(contentWidth(), -2);
@@ -492,8 +580,14 @@ public final class NotesActivity extends Activity {
 
         body = field("Start writing…", note == null ? "" : note.body, true);
         body.setMinLines(10);
-        body.setPadding(dp(18), dp(16), dp(18), dp(16));
+        body.setPadding(dp(22), dp(24), dp(22), dp(24));
+        body.setBackgroundColor(Color.TRANSPARENT);
+        body.setHintTextColor(materialColor(
+                com.google.android.material.R.attr.colorOnSurfaceVariant, 0xff686570));
         MaterialCardView paper = card();
+        paper.setRadius(dp(30));
+        paper.setCardBackgroundColor(materialColor(
+                com.google.android.material.R.attr.colorSurfaceContainerLowest, 0xfffffefd));
         paper.addView(body, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout.LayoutParams paperLp = new LinearLayout.LayoutParams(contentWidth(), 0, 1);
         paperLp.gravity = Gravity.CENTER_HORIZONTAL;
@@ -509,6 +603,15 @@ public final class NotesActivity extends Activity {
         base(note == null ? "New ink note" : "Handwriting");
         configureEditorToolbar();
 
+        TextView eyebrow = textView("A PAGE FOR YOUR PEN", 12,
+                materialColor(com.google.android.material.R.attr.colorPrimary, 0xff5e4b8b));
+        eyebrow.setLetterSpacing(.12f);
+        eyebrow.setTypeface(eyebrow.getTypeface(), android.graphics.Typeface.BOLD);
+        eyebrow.setPadding(dp(4), dp(4), dp(4), dp(12));
+        LinearLayout.LayoutParams eyebrowLp = new LinearLayout.LayoutParams(contentWidth(), -2);
+        eyebrowLp.gravity = Gravity.CENTER_HORIZONTAL;
+        root.addView(eyebrow, eyebrowLp);
+
         title = field("", note == null ? "" : note.title, false);
         TextInputLayout titleLayout = outlinedField("Title", title);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(contentWidth(), -2);
@@ -519,6 +622,7 @@ public final class NotesActivity extends Activity {
         ink = new InkView(this, this::scheduleInkAutosave);
         if (note != null) ink.restore(note.inkJson);
         MaterialCardView paper = card();
+        paper.setRadius(dp(30));
         paper.addView(ink, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout.LayoutParams inkLp = new LinearLayout.LayoutParams(contentWidth(), 0, 1);
         inkLp.gravity = Gravity.CENTER_HORIZONTAL;

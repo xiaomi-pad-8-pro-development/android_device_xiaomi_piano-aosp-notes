@@ -14,6 +14,7 @@ from Xiaomi Notes and does not read or modify Xiaomi's private database.
 - Stylus pressure-aware drawing through Android `MotionEvent`
 - Stroke erasing with touch mode or the stylus eraser end, plus Undo and Clear
 - Material 3 Expressive dynamic day/night styling, with adaptive note cards for phone and tablet widths
+- Notes search and text/handwriting filters, preserving list state across Activity recreation
 - SQLite storage owned by this app
 - Database upgrades fail closed until a preserving schema migration is implemented
 - Android Auto Backup rules for the app database, including cloud backup and device transfer
