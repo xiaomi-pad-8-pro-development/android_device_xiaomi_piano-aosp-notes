@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.PianoNotes"
+        parent="Theme.Material3Expressive.DynamicColors.DayNight.NoActionBar">
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

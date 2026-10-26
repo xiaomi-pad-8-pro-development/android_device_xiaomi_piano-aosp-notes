@@ -2,6 +2,10 @@ android_app {
     name: "PianoAospNotes",
     manifest: "AndroidManifest.xml",
     srcs: ["src/**/*.java"],
+    static_libs: [
+        "androidx.core_core",
+        "com.google.android.material_material",
+    ],
     sdk_version: "current",
     min_sdk_version: "29",
     target_sdk_version: "36",

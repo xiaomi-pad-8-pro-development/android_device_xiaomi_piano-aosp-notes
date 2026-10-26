@@ -13,6 +13,7 @@ from Xiaomi Notes and does not read or modify Xiaomi's private database.
 - Delete notes with a confirmation step
 - Stylus pressure-aware drawing through Android `MotionEvent`
 - Stroke erasing with touch mode or the stylus eraser end, plus Undo and Clear
+- Material 3 Expressive dynamic day/night styling, with adaptive note cards for phone and tablet widths
 - SQLite storage owned by this app
 - Database upgrades fail closed until a preserving schema migration is implemented
 - Android Auto Backup rules for the app database, including cloud backup and device transfer
@@ -39,7 +40,9 @@ intentionally leaves `certificate` unset so Soong uses the product default
 certificate and the ROM release-signing flow can apply its release key. Keep
 that release certificate stable and install an APK signed with that same
 certificate on the replacement phone. The app uses public Android SDK APIs
-and does not request privileged permissions.
+and does not request privileged permissions. The UI links Soong modules
+`com.google.android.material_material` and `androidx.core_core` for Material 3
+Expressive components, dynamic color, and edge-to-edge insets.
 
 Android Auto Backup includes only `piano_notes.db`. Google-account restore
 depends on Google Backup being enabled, Google's backup transport being
@@ -58,17 +61,16 @@ requires explicit confirmation. Export/import is independent of Google backup.
 The ZIP is not password-protected; treat it as readable personal data and store
 it somewhere private.
 
-The Java sources compile against the local Android 34 SDK, and AAPT2 linked the
-manifest and backup resources against that SDK. This is not a Soong build of
-the Android 17 ROM. Tablet layout, stylus latency/pressure response, activity
-lifecycle behavior, cloud/device-transfer restore, SAF providers, and product
-integration still need review and device validation.
+The standalone Android SDK builder does not include the Material Components
+classes and resources used by the current UI. Build this revision from an
+Android 17 source checkout with `m PianoAospNotes`; the older locally signed
+test APK predates the Material 3 Expressive UI and is not a build of this
+revision. Tablet layout, stylus latency/pressure response, activity lifecycle,
+cloud/device-transfer restore, SAF providers, and product integration still
+need review and device validation.
 
-For a repeatable local SDK package, use `tools/build-local-apk.sh` with
-`ANDROID_SDK_ROOT`, `NOTES_KEYSTORE`, `NOTES_KEY_ALIAS`, `NOTES_KEYSTORE_PASS`,
-and `OUTPUT_APK` set. That script targets the locally available Android 34
-build tools and uses only the keystore supplied by the caller; it does not
-produce the Android 17 Soong or ROM-release-signed artifact.
+`tools/build-local-apk.sh` directs ROM-tree builds to Soong and explains why a
+standalone SDK build cannot resolve the Material 3 dependency.
 
 The fallback archive streams newline-delimited note records inside a ZIP and
 caps the uncompressed note data at 64 MiB. Import parses and validates records

@@ -1,9 +1,9 @@
 package org.lineageos.pianonotes;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.graphics.Color;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -12,14 +12,30 @@ import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
-import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.color.DynamicColors;
+import com.google.android.material.color.MaterialColors;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -35,8 +51,14 @@ public final class NotesActivity extends Activity {
     private static final String STATE_NOTE_ID = "note_id";
     private static final String STATE_DRAWING = "drawing";
     private static final String STATE_LIST_SCROLL = "list_scroll";
+    private static final int MENU_SAVE = 1;
+    private static final int MENU_DELETE = 2;
+    private static final int MENU_EXPORT = 3;
+    private static final int MENU_IMPORT = 4;
+    private static final int MENU_BACKUP_INFO = 5;
     private NoteStore store;
     private LinearLayout root;
+    private MaterialToolbar toolbar;
     private long noteId = -1;
     private EditText title;
     private EditText body;
@@ -83,6 +105,7 @@ public final class NotesActivity extends Activity {
     }
 
     @Override public void onCreate(Bundle state) {
+        DynamicColors.applyToActivityIfAvailable(this);
         super.onCreate(state);
         store = new NoteStore(this);
         autosaveHandler = new Handler(Looper.getMainLooper());
@@ -116,15 +139,22 @@ public final class NotesActivity extends Activity {
     private void base(String heading) {
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(16), dp(20), dp(12));
-        root.setBackgroundColor(Color.rgb(250, 249, 246));
+        root.setBackgroundColor(materialColor(
+                com.google.android.material.R.attr.colorSurface, Color.WHITE));
         setContentView(root);
-        TextView bar = new TextView(this);
-        bar.setText(heading);
-        bar.setTextSize(24);
-        bar.setTextColor(Color.rgb(30, 30, 30));
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        root.addView(bar, new LinearLayout.LayoutParams(-1, dp(52)));
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
+            Insets bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(dp(24) + bars.left, dp(8) + bars.top,
+                    dp(24) + bars.right, dp(12) + bars.bottom);
+            return windowInsets;
+        });
+        toolbar = new MaterialToolbar(this);
+        toolbar.setTitle(heading);
+        toolbar.setTitleCentered(false);
+        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
+        ViewCompat.requestApplyInsets(root);
     }
 
     private void showList() {
@@ -135,61 +165,204 @@ public final class NotesActivity extends Activity {
         ink = null;
         drawing = false;
         base("Notes");
+        List<NoteStore.NoteSummary> notes = store.listSummaries();
+        toolbar.setSubtitle(notes.size() == 1 ? "1 note" : notes.size() + " notes");
+        toolbar.getMenu().add(0, MENU_EXPORT, 0, "Export backup")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_IMPORT, 1, "Import backup")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_BACKUP_INFO, 2, "Automatic backup")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == MENU_EXPORT) chooseExportDestination();
+            else if (item.getItemId() == MENU_IMPORT) confirmImport();
+            else if (item.getItemId() == MENU_BACKUP_INFO) showBackupInfo();
+            else return false;
+            return true;
+        });
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, dp(12), 0, dp(24));
+
+        TextView intro = textView("A little space for your ideas", 15,
+                materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                        Color.DKGRAY));
+        intro.setPadding(dp(4), 0, dp(4), dp(16));
+        content.addView(intro, new LinearLayout.LayoutParams(-1, -2));
+
         LinearLayout actions = new LinearLayout(this);
-        Button text = button("New text note");
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        MaterialButton text = button("Text note");
         text.setOnClickListener(v -> {
             if (requireTransferIdle()) edit(null);
         });
-        Button draw = button("New ink note");
+        MaterialButton draw = button("Handwrite");
+        draw.setBackgroundTintList(ColorStateList.valueOf(materialColor(
+                com.google.android.material.R.attr.colorSecondaryContainer, 0xffe6e0ec)));
+        draw.setTextColor(materialColor(
+                com.google.android.material.R.attr.colorOnSecondaryContainer, Color.DKGRAY));
         draw.setOnClickListener(v -> {
             if (requireTransferIdle()) editInk(null);
         });
-        actions.addView(text, weight());
-        actions.addView(draw, weight());
-        root.addView(actions);
-
-        LinearLayout transferActions = new LinearLayout(this);
-        Button export = button("Export backup");
-        export.setOnClickListener(v -> chooseExportDestination());
-        Button importButton = button("Import backup");
-        importButton.setOnClickListener(v -> confirmImport());
-        transferActions.addView(export, weight());
-        transferActions.addView(importButton, weight());
-        root.addView(transferActions);
-
-        Button backupInfo = button("Automatic backup info");
-        backupInfo.setOnClickListener(v -> showBackupInfo());
-        root.addView(backupInfo, new LinearLayout.LayoutParams(-1, dp(48)));
+        actions.addView(text, weightedButton());
+        actions.addView(draw, weightedButton());
+        content.addView(actions, new LinearLayout.LayoutParams(-1, -2));
 
         ScrollView scroll = new ScrollView(this);
         noteListScroll = scroll;
-        LinearLayout rows = new LinearLayout(this);
-        rows.setOrientation(LinearLayout.VERTICAL);
-        for (NoteStore.NoteSummary note : store.listSummaries()) {
-            TextView row = new TextView(this);
-            String preview = note.preview.replace('\n', ' ');
-            if (preview.length() > 90) preview = preview.substring(0, 90) + "…";
-            row.setText((note.title.isEmpty() ? "Untitled" : note.title)
-                    + "\n" + preview + "\n" + android.text.format.DateFormat
-                    .getMediumDateFormat(this).format(note.updated));
-            row.setTextSize(16);
-            row.setTextColor(Color.DKGRAY);
-            row.setPadding(dp(12), dp(12), dp(12), dp(12));
-            row.setBackgroundColor(Color.WHITE);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-            lp.bottomMargin = dp(8);
-            rows.addView(row, lp);
-            row.setOnClickListener(v -> {
-                if (!requireTransferIdle()) return;
-                NoteStore.Note selected = store.get(note.id);
-                if (selected != null) {
-                    if (selected.ink) editInk(selected); else edit(selected);
-                }
-            });
+        scroll.setClipToPadding(false);
+        FrameLayout frame = new FrameLayout(this);
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(-1, 0, 1);
+        root.addView(scroll, scrollLp);
+        scroll.addView(frame, new ScrollView.LayoutParams(-1, -2));
+        FrameLayout.LayoutParams contentLp = new FrameLayout.LayoutParams(
+                contentWidth(), -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        frame.addView(content, contentLp);
+
+        if (notes.isEmpty()) {
+            TextView section = textView("RECENT NOTES", 12,
+                    materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                            Color.GRAY));
+            section.setLetterSpacing(.08f);
+            section.setPadding(dp(4), dp(28), dp(4), dp(12));
+            content.addView(section, new LinearLayout.LayoutParams(-1, -2));
+
+            MaterialCardView emptyCard = card();
+            LinearLayout empty = new LinearLayout(this);
+            empty.setOrientation(LinearLayout.VERTICAL);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(24), dp(44), dp(24), dp(44));
+            TextView sparkle = textView("✦", 42,
+                    materialColor(com.google.android.material.R.attr.colorPrimary, Color.GRAY));
+            sparkle.setGravity(Gravity.CENTER);
+            empty.addView(sparkle, new LinearLayout.LayoutParams(-1, -2));
+            TextView emptyTitle = textView("Your next idea starts here", 20,
+                    materialColor(com.google.android.material.R.attr.colorOnSurface,
+                            Color.DKGRAY));
+            emptyTitle.setGravity(Gravity.CENTER);
+            emptyTitle.setPadding(0, dp(12), 0, dp(4));
+            empty.addView(emptyTitle, new LinearLayout.LayoutParams(-1, -2));
+            TextView emptyHint = textView("Write a quick thought or start a page with your pen.",
+                    14, materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                            Color.GRAY));
+            emptyHint.setGravity(Gravity.CENTER);
+            empty.addView(emptyHint, new LinearLayout.LayoutParams(-1, -2));
+            emptyCard.addView(empty);
+            content.addView(emptyCard, new LinearLayout.LayoutParams(-1, -2));
+        } else {
+            TextView section = textView("RECENT NOTES", 12,
+                    materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                            Color.GRAY));
+            section.setLetterSpacing(.08f);
+            section.setPadding(dp(4), dp(28), dp(4), dp(12));
+            content.addView(section, new LinearLayout.LayoutParams(-1, -2));
+
+            int widthDp = (int) (contentWidth() / getResources().getDisplayMetrics().density);
+            int columns = widthDp >= 960 ? 3 : widthDp >= 600 ? 2 : 1;
+            GridLayout grid = new GridLayout(this);
+            grid.setColumnCount(columns);
+            grid.setUseDefaultMargins(false);
+            content.addView(grid, new LinearLayout.LayoutParams(-1, -2));
+            for (int i = 0; i < notes.size(); i++) {
+                NoteStore.NoteSummary note = notes.get(i);
+                GridLayout.LayoutParams cardLp = new GridLayout.LayoutParams(
+                        GridLayout.spec(i / columns), GridLayout.spec(i % columns, 1f));
+                cardLp.width = 0;
+                cardLp.height = -2;
+                cardLp.setMargins(dp(4), dp(4), dp(8), dp(8));
+                grid.addView(noteCard(note), cardLp);
+            }
         }
-        scroll.addView(rows);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         scroll.post(() -> scroll.scrollTo(0, listScrollY));
+    }
+
+    private MaterialCardView noteCard(NoteStore.NoteSummary note) {
+        MaterialCardView card = card();
+        card.setClickable(true);
+        card.setFocusable(true);
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(18), dp(18), dp(18), dp(18));
+
+        TextView type = textView(note.ink ? "HANDWRITING" : "TEXT NOTE", 11,
+                materialColor(com.google.android.material.R.attr.colorPrimary,
+                        Color.DKGRAY));
+        type.setLetterSpacing(.08f);
+        details.addView(type, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView title = textView(note.title.isEmpty() ? "Untitled" : note.title, 19,
+                materialColor(com.google.android.material.R.attr.colorOnSurface,
+                        Color.DKGRAY));
+        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        title.setMaxLines(2);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(-1, -2);
+        titleLp.topMargin = dp(12);
+        details.addView(title, titleLp);
+
+        String preview = note.preview.replace('\n', ' ').trim();
+        if (preview.length() > 110) preview = preview.substring(0, 110) + "…";
+        TextView summary = textView(preview.isEmpty() ? "No preview" : preview, 14,
+                materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                        Color.GRAY));
+        summary.setMaxLines(4);
+        summary.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams summaryLp = new LinearLayout.LayoutParams(-1, -2);
+        summaryLp.topMargin = dp(8);
+        details.addView(summary, summaryLp);
+
+        TextView date = textView(android.text.format.DateFormat
+                .getMediumDateFormat(this).format(note.updated), 12,
+                materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                        Color.GRAY));
+        LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(-1, -2);
+        dateLp.topMargin = dp(18);
+        details.addView(date, dateLp);
+        card.addView(details);
+        card.setOnClickListener(v -> {
+            if (!requireTransferIdle()) return;
+            NoteStore.Note selected = store.get(note.id);
+            if (selected != null) {
+                if (selected.ink) editInk(selected); else edit(selected);
+            }
+        });
+        return card;
+    }
+
+    private MaterialCardView card() {
+        MaterialCardView card = new MaterialCardView(this);
+        card.setRadius(dp(26));
+        card.setCardElevation(0);
+        card.setCardBackgroundColor(materialColor(
+                com.google.android.material.R.attr.colorSurfaceContainerLow, Color.WHITE));
+        card.setStrokeColor(materialColor(
+                com.google.android.material.R.attr.colorOutlineVariant, 0xffdddddd));
+        card.setStrokeWidth(dp(1));
+        return card;
+    }
+
+    private TextView textView(String text, float size, int color) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        return view;
+    }
+
+    private int materialColor(int attribute, int fallback) {
+        return MaterialColors.getColor(this, attribute, fallback);
+    }
+
+    private int contentWidth() {
+        int displayWidth = getResources().getDisplayMetrics().widthPixels;
+        return Math.min(dp(1200), Math.max(dp(280), displayWidth - dp(80)));
+    }
+
+    private LinearLayout.LayoutParams weightedButton() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(60), 1);
+        params.setMargins(dp(4), 0, dp(4), 0);
+        return params;
     }
 
     private void rememberListPosition() {
@@ -205,7 +378,7 @@ public final class NotesActivity extends Activity {
     }
 
     private void confirmImport() {
-        new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("Replace local notes?")
                 .setMessage("Import replaces all notes currently stored on this device. "
                         + "Export a backup first if you want to keep them.")
@@ -215,7 +388,7 @@ public final class NotesActivity extends Activity {
     }
 
     private void showBackupInfo() {
-        new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("Android backup and restore")
                 .setMessage("When Google Backup is enabled and its backup service is active, "
                         + "Android Auto Backup can include this app's notes database in your "
@@ -307,12 +480,24 @@ public final class NotesActivity extends Activity {
         rememberListPosition();
         drawing = false;
         noteId = note == null ? -1 : note.id;
-        base("Text note");
-        title = field("Title", note == null ? "" : note.title, false);
-        body = field("Write something…", note == null ? "" : note.body, true);
-        root.addView(title);
-        root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
-        addEditorActions(false);
+        base(note == null ? "New note" : "Edit note");
+        configureEditorToolbar();
+
+        title = field("", note == null ? "" : note.title, false);
+        TextInputLayout titleLayout = outlinedField("Title", title);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(contentWidth(), -2);
+        titleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        titleLp.bottomMargin = dp(14);
+        root.addView(titleLayout, titleLp);
+
+        body = field("Start writing…", note == null ? "" : note.body, true);
+        body.setMinLines(10);
+        body.setPadding(dp(18), dp(16), dp(18), dp(16));
+        MaterialCardView paper = card();
+        paper.addView(body, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams paperLp = new LinearLayout.LayoutParams(contentWidth(), 0, 1);
+        paperLp.gravity = Gravity.CENTER_HORIZONTAL;
+        root.addView(paper, paperLp);
         lastSavedTitle = title.getText().toString();
         lastSavedBody = body.getText().toString();
     }
@@ -321,67 +506,124 @@ public final class NotesActivity extends Activity {
         rememberListPosition();
         drawing = true;
         noteId = note == null ? -1 : note.id;
-        base("Ink note");
-        title = field("Title", note == null ? "" : note.title, false);
-        root.addView(title);
+        base(note == null ? "New ink note" : "Handwriting");
+        configureEditorToolbar();
+
+        title = field("", note == null ? "" : note.title, false);
+        TextInputLayout titleLayout = outlinedField("Title", title);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(contentWidth(), -2);
+        titleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        titleLp.bottomMargin = dp(12);
+        root.addView(titleLayout, titleLp);
+
         ink = new InkView(this, this::scheduleInkAutosave);
         if (note != null) ink.restore(note.inkJson);
-        LinearLayout.LayoutParams inkLp = new LinearLayout.LayoutParams(-1, 0, 1);
-        inkLp.topMargin = dp(10);
-        inkLp.bottomMargin = dp(10);
-        root.addView(ink, inkLp);
-        addEditorActions(true);
+        MaterialCardView paper = card();
+        paper.addView(ink, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams inkLp = new LinearLayout.LayoutParams(contentWidth(), 0, 1);
+        inkLp.gravity = Gravity.CENTER_HORIZONTAL;
+        inkLp.bottomMargin = dp(12);
+        root.addView(paper, inkLp);
+        addInkActions();
     }
 
-    private void addEditorActions(boolean inkMode) {
-        LinearLayout actions = new LinearLayout(this);
-        Button back = button("Back");
-        back.setOnClickListener(v -> saveAndReturn());
-        actions.addView(back, weight());
-        if (inkMode) {
-            Button undo = button("Undo");
-            undo.setOnClickListener(v -> ink.undo());
-            actions.addView(undo, weight());
-            Button eraser = button("Eraser off");
-            eraser.setOnClickListener(v -> {
-                ink.setEraserEnabled(!ink.isEraserEnabled());
-                eraser.setText(ink.isEraserEnabled() ? "Eraser on" : "Eraser off");
-            });
-            actions.addView(eraser, weight());
-            Button clear = button("Clear");
-            clear.setOnClickListener(v -> ink.clear());
-            actions.addView(clear, weight());
-        }
-        Button save = button("Save");
-        save.setOnClickListener(v -> {
-            saveCurrent();
-            showList();
-        });
-        actions.addView(save, weight());
+    private void configureEditorToolbar() {
+        toolbar.setNavigationIcon(R.drawable.ic_arrow_back_24);
+        toolbar.setNavigationIconTint(materialColor(
+                com.google.android.material.R.attr.colorOnSurface, Color.DKGRAY));
+        toolbar.setNavigationContentDescription("Back");
+        toolbar.setNavigationOnClickListener(v -> saveAndReturn());
+        toolbar.getMenu().add(0, MENU_SAVE, 0, "Save")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS
+                        | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
         if (noteId >= 0) {
-            Button delete = button("Delete");
-            delete.setOnClickListener(v -> new AlertDialog.Builder(this)
-                    .setTitle("Delete this note?")
-                    .setMessage("This note will be permanently deleted from this device.")
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Delete", (dialog, which) -> {
-                        rememberListPosition();
-                        store.delete(noteId);
-                        showList();
-                    })
-                    .show());
-            actions.addView(delete, weight());
+            toolbar.getMenu().add(0, MENU_DELETE, 1, "Delete")
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         }
-        root.addView(actions);
+        toolbar.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == MENU_SAVE) {
+                saveCurrent();
+                showList();
+            } else if (item.getItemId() == MENU_DELETE) {
+                confirmDelete();
+            } else {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    private void confirmDelete() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Delete this note?")
+                .setMessage("This note will be permanently deleted from this device.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    rememberListPosition();
+                    store.delete(noteId);
+                    showList();
+                })
+                .show();
+    }
+
+    private void addInkActions() {
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        MaterialButton undo = button("Undo");
+        setTonalButton(undo);
+        undo.setOnClickListener(v -> ink.undo());
+        actions.addView(undo, weightedButton());
+
+        MaterialButton eraser = button("Eraser");
+        eraser.setCheckable(true);
+        setTonalButton(eraser);
+        eraser.setOnClickListener(v -> {
+            boolean enabled = eraser.isChecked();
+            ink.setEraserEnabled(enabled);
+            int background = enabled
+                    ? materialColor(com.google.android.material.R.attr.colorPrimaryContainer,
+                            0xffeaddff)
+                    : materialColor(com.google.android.material.R.attr.colorSurfaceContainerHigh,
+                            Color.LTGRAY);
+            int foreground = enabled
+                    ? materialColor(com.google.android.material.R.attr.colorOnPrimaryContainer,
+                            Color.DKGRAY)
+                    : materialColor(com.google.android.material.R.attr.colorOnSurface,
+                            Color.DKGRAY);
+            eraser.setBackgroundTintList(ColorStateList.valueOf(background));
+            eraser.setTextColor(foreground);
+        });
+        actions.addView(eraser, weightedButton());
+
+        MaterialButton clear = button("Clear page");
+        setTonalButton(clear);
+        clear.setOnClickListener(v -> new MaterialAlertDialogBuilder(this)
+                .setTitle("Clear this page?")
+                .setMessage("All handwriting on this page will be removed.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Clear", (dialog, which) -> ink.clear())
+                .show());
+        actions.addView(clear, weightedButton());
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(contentWidth(), -2);
+        actionsLp.gravity = Gravity.CENTER_HORIZONTAL;
+        root.addView(actions, actionsLp);
+    }
+
+    private void setTonalButton(MaterialButton button) {
+        button.setBackgroundTintList(ColorStateList.valueOf(materialColor(
+                com.google.android.material.R.attr.colorSurfaceContainerHigh, Color.LTGRAY)));
+        button.setTextColor(materialColor(
+                com.google.android.material.R.attr.colorOnSurface, Color.DKGRAY));
     }
 
     private EditText field(String hint, String value, boolean multiline) {
-        EditText view = new EditText(this);
+        TextInputEditText view = new TextInputEditText(this);
         view.setSingleLine(!multiline);
         view.setHint(hint);
         view.setText(value);
         view.setTextSize(multiline ? 18 : 20);
-        view.setTextColor(Color.rgb(25, 25, 25));
+        view.setTextColor(materialColor(
+                com.google.android.material.R.attr.colorOnSurface, Color.DKGRAY));
         view.setInputType(multiline
                 ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
@@ -400,8 +642,16 @@ public final class NotesActivity extends Activity {
         return view;
     }
 
-    private Button button(String text) {
-        Button b = new Button(this);
+    private TextInputLayout outlinedField(String hint, EditText input) {
+        TextInputLayout layout = new TextInputLayout(this);
+        layout.setHint(hint);
+        layout.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);
+        layout.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        return layout;
+    }
+
+    private MaterialButton button(String text) {
+        MaterialButton b = new MaterialButton(this);
         b.setText(text);
         return b;
     }
@@ -452,10 +702,6 @@ public final class NotesActivity extends Activity {
         super.onPause();
     }
 
-    private LinearLayout.LayoutParams weight() {
-        return new LinearLayout.LayoutParams(0, dp(52), 1);
-    }
-
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -475,6 +721,8 @@ public final class NotesActivity extends Activity {
                 android.graphics.Paint.ANTI_ALIAS_FLAG);
         private final List<Stroke> strokes = new ArrayList<>();
         private final Runnable onChanged;
+        private final int pageColor;
+        private final int inkColor;
         private Stroke active;
         private int activePointerId = MotionEvent.INVALID_POINTER_ID;
         private int activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
@@ -484,8 +732,14 @@ public final class NotesActivity extends Activity {
         InkView(Activity context, Runnable onChanged) {
             super(context);
             this.onChanged = onChanged;
-            setBackgroundColor(Color.rgb(232, 231, 228));
-            paint.setColor(Color.rgb(34, 45, 62));
+            setBackgroundColor(MaterialColors.getColor(context,
+                    com.google.android.material.R.attr.colorSurfaceContainer,
+                    Color.LTGRAY));
+            pageColor = MaterialColors.getColor(context,
+                    com.google.android.material.R.attr.colorSurface, Color.WHITE);
+            inkColor = MaterialColors.getColor(context,
+                    com.google.android.material.R.attr.colorOnSurface, Color.DKGRAY);
+            paint.setColor(inkColor);
             paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
             paint.setStrokeJoin(android.graphics.Paint.Join.ROUND);
             paint.setStyle(android.graphics.Paint.Style.STROKE);
@@ -500,10 +754,10 @@ public final class NotesActivity extends Activity {
             canvas.translate(left, top);
             canvas.scale(scale, scale);
             paint.setStyle(android.graphics.Paint.Style.FILL);
-            paint.setColor(Color.WHITE);
+            paint.setColor(pageColor);
             canvas.drawRect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, paint);
             paint.setStyle(android.graphics.Paint.Style.STROKE);
-            paint.setColor(Color.rgb(34, 45, 62));
+            paint.setColor(inkColor);
             for (Stroke stroke : strokes) drawStroke(canvas, stroke);
             if (active != null) drawStroke(canvas, active);
             canvas.restore();

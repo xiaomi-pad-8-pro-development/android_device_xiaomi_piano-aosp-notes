@@ -8,7 +8,7 @@
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Notes"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.PianoNotes">
         <activity
             android:name=".NotesActivity"
             android:exported="true"
