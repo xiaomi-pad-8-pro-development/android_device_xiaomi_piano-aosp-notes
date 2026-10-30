@@ -295,7 +295,7 @@ public final class NotesActivity extends Activity {
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(dp(24), dp(44), dp(24), dp(44));
             TextView sparkle = textView("✦", 42,
-                    materialColor(com.google.android.material.R.attr.colorPrimary, Color.GRAY));
+                    materialColor(androidx.appcompat.R.attr.colorPrimary, Color.GRAY));
             sparkle.setGravity(Gravity.CENTER);
             empty.addView(sparkle, new LinearLayout.LayoutParams(-1, -2));
             TextView emptyTitle = textView("Your next idea starts here", 20,
@@ -363,7 +363,7 @@ public final class NotesActivity extends Activity {
         details.setPadding(dp(18), dp(18), dp(18), dp(18));
 
         TextView type = textView(note.ink ? "HANDWRITING" : "TEXT NOTE", 11,
-                materialColor(com.google.android.material.R.attr.colorPrimary,
+                materialColor(androidx.appcompat.R.attr.colorPrimary,
                         Color.DKGRAY));
         type.setLetterSpacing(.08f);
         type.setTypeface(type.getTypeface(), android.graphics.Typeface.BOLD);
@@ -563,7 +563,7 @@ public final class NotesActivity extends Activity {
         configureEditorToolbar();
 
         TextView eyebrow = textView("YOUR THOUGHTS, IN ONE PLACE", 12,
-                materialColor(com.google.android.material.R.attr.colorPrimary, 0xff5e4b8b));
+                materialColor(androidx.appcompat.R.attr.colorPrimary, 0xff5e4b8b));
         eyebrow.setLetterSpacing(.12f);
         eyebrow.setTypeface(eyebrow.getTypeface(), android.graphics.Typeface.BOLD);
         eyebrow.setPadding(dp(4), dp(4), dp(4), dp(12));
@@ -604,7 +604,7 @@ public final class NotesActivity extends Activity {
         configureEditorToolbar();
 
         TextView eyebrow = textView("A PAGE FOR YOUR PEN", 12,
-                materialColor(com.google.android.material.R.attr.colorPrimary, 0xff5e4b8b));
+                materialColor(androidx.appcompat.R.attr.colorPrimary, 0xff5e4b8b));
         eyebrow.setLetterSpacing(.12f);
         eyebrow.setTypeface(eyebrow.getTypeface(), android.graphics.Typeface.BOLD);
         eyebrow.setPadding(dp(4), dp(4), dp(4), dp(12));
