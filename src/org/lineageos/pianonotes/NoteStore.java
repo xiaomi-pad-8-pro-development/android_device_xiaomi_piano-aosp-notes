@@ -12,7 +12,7 @@ import java.util.List;
 
 final class NoteStore extends SQLiteOpenHelper {
     private static final String DATABASE = "piano_notes.db";
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     /** Notes in the trash longer than this are deleted for good. */
     private static final long TRASH_DAYS_MS = 30L * 24 * 60 * 60 * 1000;
 
@@ -30,6 +30,12 @@ final class NoteStore extends SQLiteOpenHelper {
                 + "updated INTEGER NOT NULL)");
         db.execSQL("CREATE INDEX notes_updated_idx ON notes(updated DESC)");
         addOrganizing(db);
+        addRichText(db);
+    }
+
+    /** Schema 3: character styles of text notes. */
+    private static void addRichText(SQLiteDatabase db) {
+        db.execSQL("ALTER TABLE notes ADD COLUMN spans TEXT NOT NULL DEFAULT ''");
     }
 
     /** Schema 2: folders, pinned notes and a trash. */
@@ -43,8 +49,9 @@ final class NoteStore extends SQLiteOpenHelper {
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        if (oldVersion == 1 && newVersion == 2) {
-            addOrganizing(db);
+        if (newVersion == 3 && (oldVersion == 1 || oldVersion == 2)) {
+            if (oldVersion == 1) addOrganizing(db);
+            addRichText(db);
             return;
         }
         // Fail closed until an explicit forward migration is added. SQLiteOpenHelper
@@ -55,12 +62,17 @@ final class NoteStore extends SQLiteOpenHelper {
     }
 
     long save(long id, String title, String body, boolean ink, String inkJson) {
+        return save(id, title, body, ink, inkJson, "");
+    }
+
+    long save(long id, String title, String body, boolean ink, String inkJson, String spans) {
         long now = System.currentTimeMillis();
         ContentValues values = new ContentValues();
         values.put("title", title == null ? "" : title.trim());
         values.put("body", body == null ? "" : body);
         values.put("is_ink", ink ? 1 : 0);
         values.put("ink_json", inkJson == null ? "" : inkJson);
+        values.put("spans", spans == null ? "" : spans);
         values.put("updated", now);
         if (id < 0) return getWritableDatabase().insertOrThrow("notes", null, values);
         int changed = getWritableDatabase().update("notes", values, "_id=?",
@@ -87,22 +99,23 @@ final class NoteStore extends SQLiteOpenHelper {
 
     Note get(long id) {
         try (Cursor cursor = getReadableDatabase().query("notes",
-                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated"},
+                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated", "spans"},
                 "_id=?", new String[]{Long.toString(id)}, null, null, null)) {
             if (!cursor.moveToFirst()) return null;
             return new Note(cursor.getLong(0), cursor.getString(1), cursor.getString(2),
-                    cursor.getInt(3) != 0, cursor.getString(4), cursor.getLong(5));
+                    cursor.getInt(3) != 0, cursor.getString(4), cursor.getLong(5),
+                    cursor.getString(6));
         }
     }
 
     void forEachNote(NoteConsumer consumer) throws Exception {
         try (Cursor cursor = getReadableDatabase().query("notes",
-                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated"},
+                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated", "spans"},
                 null, null, null, null, "updated DESC, _id DESC")) {
             while (cursor.moveToNext()) {
                 consumer.accept(new Note(cursor.getLong(0), cursor.getString(1),
                         cursor.getString(2), cursor.getInt(3) != 0,
-                        cursor.getString(4), cursor.getLong(5)));
+                        cursor.getString(4), cursor.getLong(5), cursor.getString(6)));
             }
         }
     }
@@ -203,6 +216,7 @@ final class NoteStore extends SQLiteOpenHelper {
                 values.put("is_ink", note.ink ? 1 : 0);
                 values.put("ink_json", note.inkJson);
                 values.put("updated", note.updated);
+                values.put("spans", note.spans);
                 db.insertOrThrow("notes", null, values);
             });
             db.setTransactionSuccessful();
@@ -226,8 +240,15 @@ final class NoteStore extends SQLiteOpenHelper {
         final boolean ink;
         final String inkJson;
         final long updated;
+        final String spans;
 
         Note(long id, String title, String body, boolean ink, String inkJson, long updated) {
+            this(id, title, body, ink, inkJson, updated, "");
+        }
+
+        Note(long id, String title, String body, boolean ink, String inkJson, long updated,
+                String spans) {
+            this.spans = spans == null ? "" : spans;
             this.id = id;
             this.title = title;
             this.body = body;

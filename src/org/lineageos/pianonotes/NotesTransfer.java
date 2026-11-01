@@ -117,6 +117,7 @@ final class NotesTransfer {
         item.put("ink", note.ink);
         item.put("ink_json", note.inkJson);
         item.put("updated", note.updated);
+        item.put("spans", note.spans);
         return item;
     }
 
@@ -132,7 +133,8 @@ final class NotesTransfer {
         }
         if (ink) validateInk(inkJson);
         else if (!inkJson.isEmpty()) throw new IOException("The backup contains invalid note data.");
-        return new NoteStore.Note(-1, title, body, ink, inkJson, updated);
+        return new NoteStore.Note(-1, title, body, ink, inkJson, updated,
+                item.optString("spans", ""));
     }
 
     private static byte[] readBounded(InputStream input, int maxBytes) throws IOException {

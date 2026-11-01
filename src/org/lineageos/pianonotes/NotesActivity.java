@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
@@ -94,7 +95,7 @@ public final class NotesActivity extends Activity {
     private void runTextAutosave() {
         if (title == null || body == null || drawing) return;
         String currentTitle = title.getText().toString();
-        String currentBody = body.getText().toString();
+        String currentBody = bodyState();
         if (currentTitle.equals(lastSavedTitle) && currentBody.equals(lastSavedBody)) return;
         try {
             saveCurrent();
@@ -474,7 +475,7 @@ public final class NotesActivity extends Activity {
         input.setSingleLine(true);
         input.setHint("Folder name");
         if (folder != null) input.setText(folder.name);
-        MaterialAlertDialogBuilder dialog = new MaterialAlertDialogBuilder(this)
+        var dialog = new MaterialAlertDialogBuilder(this)
                 .setTitle(folder == null ? "New folder" : "Edit folder")
                 .setView(input, dp(24), dp(8), dp(24), 0)
                 .setNegativeButton("Cancel", null)
@@ -801,8 +802,181 @@ public final class NotesActivity extends Activity {
         LinearLayout.LayoutParams paperLp = new LinearLayout.LayoutParams(editorWidth(), 0, 1);
         paperLp.gravity = Gravity.CENTER_HORIZONTAL;
         editorHost.addView(paper, paperLp);
+        if (note != null) RichText.apply(body.getText(), note.spans);
+        body.addTextChangedListener(new ListContinuation());
+        body.setOnTouchListener(this::toggleCheckOnTap);
+        editorHost.addView(formatBar(), editorHost.indexOfChild(paper));
         lastSavedTitle = title.getText().toString();
-        lastSavedBody = body.getText().toString();
+        lastSavedBody = bodyState();
+    }
+
+    private String bodyState() {
+        return body.getText().toString() + '\u0000' + RichText.serialize(body.getText());
+    }
+
+    private void scheduleTextAutosave() {
+        if (autosaveHandler == null) return;
+        autosaveHandler.removeCallbacks(textAutosave);
+        autosaveHandler.postDelayed(textAutosave, 700);
+    }
+
+    /** The Xiaomi Notes formatting bar: styles, lists, checklist, indent and divider. */
+    private View formatBar() {
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setPadding(0, 0, 0, dp(8));
+        scroller.addView(bar);
+        addFormat(bar, "B", "Bold", () -> style(RichText.BOLD));
+        addFormat(bar, "H1", "First-level heading", () -> style(RichText.HEADING_1));
+        addFormat(bar, "H2", "Second-level heading", () -> style(RichText.HEADING_2));
+        addFormat(bar, "▌", "Highlight", () -> style(RichText.HIGHLIGHT));
+        addFormat(bar, "U", "Underline", () -> style(RichText.UNDERLINE));
+        addFormat(bar, "S", "Strikethrough", () -> style(RichText.STRIKE));
+        addFormat(bar, "•", "Bulleted list", () -> toggleMarker(RichText.BULLET));
+        addFormat(bar, "1.", "Numbered list", () -> toggleMarker("1. "));
+        addFormat(bar, "☐", "Checklist", () -> toggleMarker(RichText.CHECK_OPEN));
+        addFormat(bar, "⇥", "Increase indent", () -> indent(true));
+        addFormat(bar, "⇤", "Decrease indent", () -> indent(false));
+        addFormat(bar, "—", "Divider", this::insertDivider);
+        return scroller;
+    }
+
+    private void addFormat(LinearLayout bar, String label, String description, Runnable action) {
+        MaterialButton button = button(label);
+        button.setContentDescription(description);
+        button.setTooltipText(description);
+        button.setMinWidth(dp(48));
+        button.setMinimumWidth(dp(48));
+        button.setPadding(dp(8), 0, dp(8), 0);
+        button.setCornerRadius(dp(16));
+        setTonalButton(button);
+        button.setOnClickListener(v -> {
+            action.run();
+            scheduleTextAutosave();
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(44));
+        lp.setMargins(0, 0, dp(6), 0);
+        bar.addView(button, lp);
+    }
+
+    private void style(String type) {
+        int start = Math.min(body.getSelectionStart(), body.getSelectionEnd());
+        int end = Math.max(body.getSelectionStart(), body.getSelectionEnd());
+        if (start == end) {
+            // No selection: style the current line, like Xiaomi Notes does for headings.
+            start = RichText.lineStart(body.getText(), start);
+            end = RichText.lineEnd(body.getText(), end);
+        }
+        RichText.toggle(body.getText(), type, start, end);
+    }
+
+    /** Adds the marker to every selected line, or removes it when they all have it. */
+    private void toggleMarker(String marker) {
+        Editable text = body.getText();
+        int first = RichText.lineStart(text, Math.min(body.getSelectionStart(), body.getSelectionEnd()));
+        int last = RichText.lineEnd(text, Math.max(body.getSelectionStart(), body.getSelectionEnd()));
+        List<Integer> starts = new ArrayList<>();
+        for (int i = first; i <= last; i = RichText.lineEnd(text, i) + 1) {
+            starts.add(i);
+            if (RichText.lineEnd(text, i) >= last) break;
+        }
+        boolean numbered = marker.equals("1. ");
+        boolean allHave = true;
+        for (int start : starts) {
+            String current = RichText.markerOf(line(text, start));
+            boolean has = numbered ? current != null && current.matches("\\d+\\. ")
+                    : marker.equals(current) || (marker.equals(RichText.CHECK_OPEN)
+                            && RichText.CHECK_DONE.equals(current));
+            allHave &= has;
+        }
+        for (int k = starts.size() - 1; k >= 0; k--) {
+            int start = starts.get(k);
+            int at = start + RichText.indentOf(line(text, start));
+            String current = RichText.markerOf(line(text, start));
+            if (current != null) text.delete(at, at + current.length());
+            if (!allHave) text.insert(at, numbered ? (k + 1) + ". " : marker);
+        }
+    }
+
+    private void indent(boolean in) {
+        Editable text = body.getText();
+        int start = RichText.lineStart(text, body.getSelectionStart());
+        if (in) {
+            text.insert(start, RichText.INDENT);
+        } else if (RichText.indentOf(line(text, start)) > 0) {
+            text.delete(start, start + RichText.INDENT.length());
+        }
+    }
+
+    private void insertDivider() {
+        Editable text = body.getText();
+        int at = RichText.lineEnd(text, body.getSelectionEnd());
+        text.insert(at, "\n" + RichText.DIVIDER + "\n");
+        body.setSelection(Math.min(text.length(), at + RichText.DIVIDER.length() + 2));
+    }
+
+    private static CharSequence line(CharSequence text, int start) {
+        return text.subSequence(start, RichText.lineEnd(text, start));
+    }
+
+    /** Tapping a checkbox marks the item done or not done. */
+    private boolean toggleCheckOnTap(View view, MotionEvent event) {
+        if (event.getAction() != MotionEvent.ACTION_UP) return false;
+        int offset = body.getOffsetForPosition(event.getX(), event.getY());
+        Editable text = body.getText();
+        int start = RichText.lineStart(text, offset);
+        int at = start + RichText.indentOf(line(text, start));
+        String marker = RichText.markerOf(line(text, start));
+        if (offset > at + 2 || !(RichText.CHECK_OPEN.equals(marker)
+                || RichText.CHECK_DONE.equals(marker))) return false;
+        boolean done = RichText.CHECK_OPEN.equals(marker);
+        text.replace(at, at + marker.length(), done ? RichText.CHECK_DONE : RichText.CHECK_OPEN);
+        int end = RichText.lineEnd(text, at);
+        int itemStart = at + marker.length();
+        // A done item is crossed out, as in Xiaomi Notes.
+        if (itemStart < end) {
+            for (android.text.style.StrikethroughSpan span
+                    : text.getSpans(itemStart, end, android.text.style.StrikethroughSpan.class)) {
+                text.removeSpan(span);
+            }
+            if (done) RichText.toggle(text, RichText.STRIKE, itemStart, end);
+        }
+        scheduleTextAutosave();
+        return true;
+    }
+
+    /** Enter on a list line starts the next item; Enter on an empty item ends the list. */
+    private final class ListContinuation implements android.text.TextWatcher {
+        private boolean editing;
+        private int newline = -1;
+
+        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+        @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+            newline = !editing && count == 1 && before == 0 && s.charAt(start) == '\n' ? start : -1;
+        }
+
+        @Override public void afterTextChanged(Editable text) {
+            if (editing || newline < 0) return;
+            int previous = RichText.lineStart(text, newline);
+            CharSequence line = line(text, previous);
+            String marker = RichText.markerOf(line);
+            if (marker == null) return;
+            int indent = RichText.indentOf(line);
+            editing = true;
+            if (line.length() == indent + marker.length()) {
+                text.delete(previous, newline + 1);
+            } else {
+                String next = marker.matches("\\d+\\. ")
+                        ? (Integer.parseInt(marker.substring(0, marker.indexOf('.'))) + 1) + ". "
+                        : RichText.CHECK_DONE.equals(marker) ? RichText.CHECK_OPEN : marker;
+                text.insert(newline + 1, line.subSequence(0, indent) + next);
+            }
+            editing = false;
+            newline = -1;
+        }
     }
 
     private void editInk(NoteStore.Note note) {
@@ -1009,7 +1183,8 @@ public final class NotesActivity extends Activity {
             String inkJson = drawing ? ink.serialize() : "";
             boolean created = noteId < 0;
             noteId = store.save(noteId, title.getText().toString(),
-                    drawing ? "" : body.getText().toString(), drawing, inkJson);
+                    drawing ? "" : body.getText().toString(), drawing, inkJson,
+                    drawing ? "" : RichText.serialize(body.getText()));
             // A note written while a folder is open belongs to that folder.
             if (created && currentFolder() > 0) store.moveToFolder(noteId, currentFolder());
         }
