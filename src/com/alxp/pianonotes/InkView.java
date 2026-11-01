@@ -540,6 +540,15 @@ final class InkView extends View {
         }
     }
 
+    /** The lasso selection, or every stroke, as point lists for handwriting recognition. */
+    List<List<float[]>> strokesToRecognize() {
+        List<List<float[]>> result = new ArrayList<>();
+        for (Stroke stroke : selection.isEmpty() ? strokes : selection) {
+            if (stroke.pen != Pen.HIGHLIGHTER && !stroke.points.isEmpty()) result.add(stroke.points);
+        }
+        return result;
+    }
+
     /** One stroke and the pen it was drawn with. Pages from before pens were points only. */
     static final class Stroke {
         Pen pen;

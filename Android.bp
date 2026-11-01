@@ -6,11 +6,15 @@ android_app {
         "androidx.appcompat_appcompat",
         "androidx.core_core",
         "com.google.android.material_material",
+        "PianoNotesMyScript",
     ],
     sdk_version: "current",
     min_sdk_version: "29",
     target_sdk_version: "36",
     java_version: "17",
+    optimize: {
+        proguard_flags_files: ["proguard.flags"],
+    },
     // Use the product default certificate so release signing follows the ROM.
     privileged: false,
     platform_apis: false,

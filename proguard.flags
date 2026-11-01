@@ -1,0 +1,3 @@
+# HandwritingText reaches MyScript through reflection.
+-keep class com.myscript.** { *; }
+-dontwarn com.myscript.**

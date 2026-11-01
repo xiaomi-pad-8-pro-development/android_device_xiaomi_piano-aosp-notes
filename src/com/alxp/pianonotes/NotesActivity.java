@@ -59,6 +59,7 @@ public final class NotesActivity extends Activity {
     private static final int MENU_HIDE = 21;
     private static final int MENU_SHARE = 22;
     private static final int MENU_XIAOMI = 23;
+    private static final int MENU_CONVERT = 24;
     private static final String STATE_EDITOR = "editor";
     private static final String STATE_NOTE_ID = "note_id";
     private static final String STATE_DRAWING = "drawing";
@@ -1140,6 +1141,10 @@ public final class NotesActivity extends Activity {
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_MOVE, 2, "Move to folder")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        if (drawing) {
+            toolbar.getMenu().add(0, MENU_CONVERT, 2, "Convert to text")
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        }
         toolbar.getMenu().add(0, MENU_REMIND, 3, "Reminder")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_SHARE, 3, "Export as picture, PDF or Markdown")
@@ -1156,6 +1161,8 @@ public final class NotesActivity extends Activity {
                 saveCurrent();
                 if (noteId >= 0) store.trash(noteId);
                 showList();
+            } else if (item.getItemId() == MENU_CONVERT) {
+                convertHandwriting();
             } else if (item.getItemId() == MENU_SHARE) {
                 chooseShareKind();
             } else if (item.getItemId() == MENU_REMIND || item.getItemId() == MENU_HIDE) {
@@ -1762,6 +1769,72 @@ public final class NotesActivity extends Activity {
                 NotesWidget.refresh(this);
             });
         }, "xiaomi-import").start();
+    }
+
+    // --- Handwriting to text -----------------------------------------------------
+
+    /** Converts the lasso selection, or the whole page, to text with MyScript. */
+    private void convertHandwriting() {
+        if (ink == null) return;
+        if (!HandwritingText.available()) {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle("Convert to text")
+                    .setMessage("Handwriting recognition uses the MyScript SDK, which is only "
+                            + "in personal builds made with a MyScript developer certificate.")
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        List<List<float[]>> strokes = ink.strokesToRecognize();
+        if (strokes.isEmpty()) {
+            Toast.makeText(this, "Write something first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, "Recognising…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String text;
+            String error = null;
+            try {
+                text = HandwritingText.recognize(this, strokes);
+            } catch (Exception failure) {
+                text = "";
+                error = failure.getMessage();
+            }
+            String result = text;
+            String problem = error;
+            runOnUiThread(() -> {
+                if (isDestroyed()) return;
+                if (problem != null) {
+                    Toast.makeText(this, "Recognition failed: " + problem, Toast.LENGTH_LONG).show();
+                } else {
+                    showRecognized(result);
+                }
+            });
+        }, "handwriting-text").start();
+    }
+
+    private void showRecognized(String text) {
+        EditText output = new EditText(this);
+        output.setText(text);
+        output.setMinLines(3);
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Recognised text")
+                .setView(output, dp(24), dp(8), dp(24), 0)
+                .setNegativeButton("Copy", (d, w) -> {
+                    android.content.ClipboardManager clipboard =
+                            getSystemService(android.content.ClipboardManager.class);
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Note",
+                            output.getText()));
+                })
+                .setPositiveButton("New text note", (d, w) -> {
+                    String heading = title.getText().toString();
+                    saveCurrent();
+                    long id = store.save(-1, heading, output.getText().toString(), false, "");
+                    NoteStore.Note note = store.get(id);
+                    if (note != null) edit(note);
+                })
+                .setNeutralButton(android.R.string.cancel, null)
+                .show();
     }
 
     // --- Mind maps --------------------------------------------------------------

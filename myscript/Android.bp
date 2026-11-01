@@ -1,0 +1,9 @@
+// MyScript iink handwriting recognition for Notes. This is an empty stand-in:
+// tools/enable-myscript.sh replaces it with the private SDK, recognition
+// assets and developer certificate in a personal build tree. See README.md.
+android_library {
+    name: "PianoNotesMyScript",
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    min_sdk_version: "29",
+}
