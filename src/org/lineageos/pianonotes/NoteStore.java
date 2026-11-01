@@ -12,7 +12,9 @@ import java.util.List;
 
 final class NoteStore extends SQLiteOpenHelper {
     private static final String DATABASE = "piano_notes.db";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+    /** Notes in the trash longer than this are deleted for good. */
+    private static final long TRASH_DAYS_MS = 30L * 24 * 60 * 60 * 1000;
 
     NoteStore(Context context) {
         super(context, DATABASE, null, VERSION);
@@ -27,9 +29,24 @@ final class NoteStore extends SQLiteOpenHelper {
                 + "ink_json TEXT NOT NULL DEFAULT '',"
                 + "updated INTEGER NOT NULL)");
         db.execSQL("CREATE INDEX notes_updated_idx ON notes(updated DESC)");
+        addOrganizing(db);
+    }
+
+    /** Schema 2: folders, pinned notes and a trash. */
+    private static void addOrganizing(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE folders ("
+                + "_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "name TEXT NOT NULL)");
+        db.execSQL("ALTER TABLE notes ADD COLUMN folder_id INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("ALTER TABLE notes ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion == 1 && newVersion == 2) {
+            addOrganizing(db);
+            return;
+        }
         // Fail closed until an explicit forward migration is added. SQLiteOpenHelper
         // runs this callback transactionally, so throwing preserves the old schema
         // version and prevents the app from silently treating unmigrated notes as current.
@@ -56,11 +73,13 @@ final class NoteStore extends SQLiteOpenHelper {
         List<NoteSummary> result = new ArrayList<>();
         try (Cursor cursor = getReadableDatabase().rawQuery(
                 "SELECT _id, title, CASE WHEN is_ink != 0 THEN 'Ink page' "
-                        + "ELSE substr(body, 1, 90) END, is_ink, updated "
-                        + "FROM notes ORDER BY updated DESC, _id DESC", null)) {
+                        + "ELSE substr(body, 1, 90) END, is_ink, updated, "
+                        + "folder_id, pinned, deleted "
+                        + "FROM notes ORDER BY pinned DESC, updated DESC, _id DESC", null)) {
             while (cursor.moveToNext()) {
                 result.add(new NoteSummary(cursor.getLong(0), cursor.getString(1),
-                        cursor.getString(2), cursor.getInt(3) != 0, cursor.getLong(4)));
+                        cursor.getString(2), cursor.getInt(3) != 0, cursor.getLong(4),
+                        cursor.getLong(5), cursor.getInt(6) != 0, cursor.getLong(7) != 0));
             }
         }
         return result;
@@ -85,6 +104,86 @@ final class NoteStore extends SQLiteOpenHelper {
                         cursor.getString(2), cursor.getInt(3) != 0,
                         cursor.getString(4), cursor.getLong(5)));
             }
+        }
+    }
+
+    void setPinned(long id, boolean pinned) {
+        ContentValues values = new ContentValues();
+        values.put("pinned", pinned ? 1 : 0);
+        update(id, values);
+    }
+
+    void moveToFolder(long id, long folderId) {
+        ContentValues values = new ContentValues();
+        values.put("folder_id", folderId);
+        update(id, values);
+    }
+
+    /** Moves a note to the trash; it can be restored for 30 days. */
+    void trash(long id) {
+        ContentValues values = new ContentValues();
+        values.put("deleted", System.currentTimeMillis());
+        values.put("pinned", 0);
+        update(id, values);
+    }
+
+    void restore(long id) {
+        ContentValues values = new ContentValues();
+        values.put("deleted", 0);
+        update(id, values);
+    }
+
+    void emptyTrash() {
+        getWritableDatabase().delete("notes", "deleted != 0", null);
+    }
+
+    /** Deletes notes that have been in the trash for more than 30 days. */
+    void purgeTrash() {
+        getWritableDatabase().delete("notes", "deleted != 0 AND deleted < ?",
+                new String[]{Long.toString(System.currentTimeMillis() - TRASH_DAYS_MS)});
+    }
+
+    private void update(long id, ContentValues values) {
+        getWritableDatabase().update("notes", values, "_id=?",
+                new String[]{Long.toString(id)});
+    }
+
+    List<Folder> listFolders() {
+        List<Folder> result = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT _id, name FROM folders ORDER BY name COLLATE NOCASE", null)) {
+            while (cursor.moveToNext()) {
+                result.add(new Folder(cursor.getLong(0), cursor.getString(1)));
+            }
+        }
+        return result;
+    }
+
+    long addFolder(String name) {
+        ContentValues values = new ContentValues();
+        values.put("name", name.trim());
+        return getWritableDatabase().insertOrThrow("folders", null, values);
+    }
+
+    void renameFolder(long id, String name) {
+        ContentValues values = new ContentValues();
+        values.put("name", name.trim());
+        getWritableDatabase().update("folders", values, "_id=?",
+                new String[]{Long.toString(id)});
+    }
+
+    /** Deletes a folder; its notes stay, outside any folder. */
+    void deleteFolder(long id) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ContentValues values = new ContentValues();
+            values.put("folder_id", 0);
+            db.update("notes", values, "folder_id=?", new String[]{Long.toString(id)});
+            db.delete("folders", "_id=?", new String[]{Long.toString(id)});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
         }
     }
 
@@ -145,12 +244,30 @@ final class NoteStore extends SQLiteOpenHelper {
         final boolean ink;
         final long updated;
 
-        NoteSummary(long id, String title, String preview, boolean ink, long updated) {
+        final long folderId;
+        final boolean pinned;
+        final boolean deleted;
+
+        NoteSummary(long id, String title, String preview, boolean ink, long updated,
+                long folderId, boolean pinned, boolean deleted) {
             this.id = id;
             this.title = title;
             this.preview = preview;
             this.ink = ink;
             this.updated = updated;
+            this.folderId = folderId;
+            this.pinned = pinned;
+            this.deleted = deleted;
+        }
+    }
+
+    static final class Folder {
+        final long id;
+        final String name;
+
+        Folder(long id, String name) {
+            this.id = id;
+            this.name = name;
         }
     }
 }

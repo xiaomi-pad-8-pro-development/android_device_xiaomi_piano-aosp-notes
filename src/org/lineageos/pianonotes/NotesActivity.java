@@ -60,6 +60,12 @@ public final class NotesActivity extends Activity {
     private static final int MENU_IMPORT = 4;
     private static final int MENU_BACKUP_INFO = 5;
     private static final int MENU_SEARCH = 6;
+    private static final int MENU_PIN = 7;
+    private static final int MENU_MOVE = 8;
+    private static final int MENU_EMPTY_TRASH = 9;
+    private static final String FILTER_PINNED = "Pinned";
+    private static final String FILTER_TRASH = "Trash";
+    private static final String FOLDER_PREFIX = "folder:";
     private NoteStore store;
     private LinearLayout root;
     private MaterialToolbar toolbar;
@@ -114,6 +120,7 @@ public final class NotesActivity extends Activity {
         DynamicColors.applyToActivityIfAvailable(this);
         super.onCreate(state);
         store = new NoteStore(this);
+        store.purgeTrash();
         autosaveHandler = new Handler(Looper.getMainLooper());
         if (state != null) listScrollY = state.getInt(STATE_LIST_SCROLL, 0);
         if (state != null) {
@@ -179,7 +186,9 @@ public final class NotesActivity extends Activity {
         drawing = false;
         base("Notes");
         List<NoteStore.NoteSummary> notes = store.listSummaries();
-        toolbar.setSubtitle(notes.size() == 1 ? "1 note" : notes.size() + " notes");
+        int live = 0;
+        for (NoteStore.NoteSummary note : notes) if (!note.deleted) live++;
+        toolbar.setSubtitle(live == 1 ? "1 note" : live + " notes");
         toolbar.getMenu().add(0, MENU_EXPORT, 0, "Export backup")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_IMPORT, 1, "Import backup")
@@ -189,8 +198,13 @@ public final class NotesActivity extends Activity {
         toolbar.getMenu().add(0, MENU_SEARCH, 3, "Search notes")
                 .setIcon(android.R.drawable.ic_menu_search)
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+        if (activeFilter.equals(FILTER_TRASH)) {
+            toolbar.getMenu().add(0, MENU_EMPTY_TRASH, 4, "Empty trash")
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        }
         toolbar.setOnMenuItemClickListener(item -> {
-            if (item.getItemId() == MENU_EXPORT) chooseExportDestination();
+            if (item.getItemId() == MENU_EMPTY_TRASH) confirmEmptyTrash();
+            else if (item.getItemId() == MENU_EXPORT) chooseExportDestination();
             else if (item.getItemId() == MENU_IMPORT) confirmImport();
             else if (item.getItemId() == MENU_BACKUP_INFO) showBackupInfo();
             else if (item.getItemId() == MENU_SEARCH) showSearchDialog();
@@ -238,9 +252,20 @@ public final class NotesActivity extends Activity {
         filters.setHorizontalScrollBarEnabled(false);
         LinearLayout chipRow = new LinearLayout(this);
         chipRow.setOrientation(LinearLayout.HORIZONTAL);
-        String[] categories = {"All", "Text", "Handwriting"};
+        List<NoteStore.Folder> folders = store.listFolders();
+        List<String> categories = new ArrayList<>(java.util.Arrays.asList(
+                "All", FILTER_PINNED, "Text", "Handwriting"));
+        for (NoteStore.Folder folder : folders) categories.add(FOLDER_PREFIX + folder.id);
+        categories.add(FILTER_TRASH);
+        if (activeFilter.startsWith(FOLDER_PREFIX) && !categories.contains(activeFilter)) {
+            activeFilter = "All";
+        }
         for (String category : categories) {
-            MaterialButton chip = button(category);
+            NoteStore.Folder folder = folderFor(folders, category);
+            MaterialButton chip = button(folder != null ? folder.name : category);
+            if (folder != null) {
+                chip.setOnLongClickListener(v -> { editFolder(folder); return true; });
+            }
             chip.setCheckable(true);
             chip.setChecked(activeFilter.equals(category));
             chip.setCornerRadius(dp(22));
@@ -258,6 +283,13 @@ public final class NotesActivity extends Activity {
             chipRow.addView(chip, chipLp);
             chip.setOnClickListener(v -> { activeFilter = category; showList(); });
         }
+        MaterialButton newFolder = button("+ Folder");
+        newFolder.setCornerRadius(dp(22));
+        setTonalButton(newFolder);
+        LinearLayout.LayoutParams newFolderLp = new LinearLayout.LayoutParams(-2, dp(44));
+        newFolderLp.setMargins(dp(4), dp(14), dp(6), dp(2));
+        chipRow.addView(newFolder, newFolderLp);
+        newFolder.setOnClickListener(v -> editFolder(null));
         filters.addView(chipRow);
         content.addView(filters, new LinearLayout.LayoutParams(-1, -2));
 
@@ -274,6 +306,10 @@ public final class NotesActivity extends Activity {
 
         List<NoteStore.NoteSummary> visibleNotes = new ArrayList<>();
         for (NoteStore.NoteSummary note : notes) {
+            if (activeFilter.equals(FILTER_TRASH) != note.deleted) continue;
+            if (activeFilter.equals(FILTER_PINNED) && !note.pinned) continue;
+            if (activeFilter.startsWith(FOLDER_PREFIX)
+                    && note.folderId != currentFolder()) continue;
             if (activeFilter.equals("Text") && note.ink) continue;
             if (activeFilter.equals("Handwriting") && !note.ink) continue;
             String haystack = (note.title + " " + note.preview).toLowerCase(java.util.Locale.ROOT);
@@ -281,8 +317,10 @@ public final class NotesActivity extends Activity {
                     java.util.Locale.ROOT))) continue;
             visibleNotes.add(note);
         }
+        String sectionName = activeFilter.equals(FILTER_TRASH)
+                ? "TRASH · DELETED AFTER 30 DAYS" : "RECENT NOTES";
         if (visibleNotes.isEmpty()) {
-            TextView section = textView("RECENT NOTES", 12,
+            TextView section = textView(sectionName, 12,
                     materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
                             Color.GRAY));
             section.setLetterSpacing(.08f);
@@ -312,7 +350,7 @@ public final class NotesActivity extends Activity {
             emptyCard.addView(empty);
             content.addView(emptyCard, new LinearLayout.LayoutParams(-1, -2));
         } else {
-            TextView section = textView("RECENT NOTES", 12,
+            TextView section = textView(sectionName, 12,
                     materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
                             Color.GRAY));
             section.setLetterSpacing(.08f);
@@ -352,6 +390,101 @@ public final class NotesActivity extends Activity {
                 }).show();
     }
 
+    private long currentFolder() {
+        return activeFilter.startsWith(FOLDER_PREFIX)
+                ? Long.parseLong(activeFilter.substring(FOLDER_PREFIX.length())) : 0;
+    }
+
+    private static NoteStore.Folder folderFor(List<NoteStore.Folder> folders, String category) {
+        if (!category.startsWith(FOLDER_PREFIX)) return null;
+        long id = Long.parseLong(category.substring(FOLDER_PREFIX.length()));
+        for (NoteStore.Folder folder : folders) if (folder.id == id) return folder;
+        return null;
+    }
+
+    /** Creates a folder, or renames or deletes an existing one. */
+    private void editFolder(NoteStore.Folder folder) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("Folder name");
+        if (folder != null) input.setText(folder.name);
+        MaterialAlertDialogBuilder dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(folder == null ? "New folder" : "Edit folder")
+                .setView(input, dp(24), dp(8), dp(24), 0)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton(folder == null ? "Create" : "Rename", (d, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (name.isEmpty()) return;
+                    if (folder == null) activeFilter = FOLDER_PREFIX + store.addFolder(name);
+                    else store.renameFolder(folder.id, name);
+                    showList();
+                });
+        if (folder != null) {
+            dialog.setNeutralButton("Delete folder", (d, which) -> {
+                store.deleteFolder(folder.id);
+                activeFilter = "All";
+                showList();
+            });
+        }
+        dialog.show();
+    }
+
+    private void showNoteActions(NoteStore.NoteSummary note) {
+        if (note.deleted) {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle(note.title.isEmpty() ? "Untitled" : note.title)
+                    .setItems(new String[]{"Restore", "Delete forever"}, (d, which) -> {
+                        rememberListPosition();
+                        if (which == 0) store.restore(note.id); else store.delete(note.id);
+                        showList();
+                    })
+                    .show();
+            return;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(note.title.isEmpty() ? "Untitled" : note.title)
+                .setItems(new String[]{note.pinned ? "Unpin" : "Pin to top",
+                        "Move to folder", "Move to trash"}, (d, which) -> {
+                    rememberListPosition();
+                    if (which == 0) {
+                        store.setPinned(note.id, !note.pinned);
+                        showList();
+                    } else if (which == 1) {
+                        chooseFolder(note.id, this::showList);
+                    } else {
+                        store.trash(note.id);
+                        showList();
+                    }
+                })
+                .show();
+    }
+
+    private void chooseFolder(long id, Runnable done) {
+        List<NoteStore.Folder> folders = store.listFolders();
+        String[] names = new String[folders.size() + 1];
+        names[0] = "No folder";
+        for (int i = 0; i < folders.size(); i++) names[i + 1] = folders.get(i).name;
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Move to folder")
+                .setItems(names, (d, which) -> {
+                    store.moveToFolder(id, which == 0 ? 0 : folders.get(which - 1).id);
+                    done.run();
+                })
+                .show();
+    }
+
+    private void confirmEmptyTrash() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Empty trash?")
+                .setMessage("Notes in the trash will be permanently deleted.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Empty", (d, which) -> {
+                    store.emptyTrash();
+                    showList();
+                })
+                .show();
+    }
+
     private MaterialCardView noteCard(NoteStore.NoteSummary note) {
         MaterialCardView card = card();
         card.setCardBackgroundColor(materialColor(
@@ -362,7 +495,8 @@ public final class NotesActivity extends Activity {
         details.setOrientation(LinearLayout.VERTICAL);
         details.setPadding(dp(18), dp(18), dp(18), dp(18));
 
-        TextView type = textView(note.ink ? "HANDWRITING" : "TEXT NOTE", 11,
+        TextView type = textView((note.pinned ? "PINNED · " : "")
+                + (note.ink ? "HANDWRITING" : "TEXT NOTE"), 11,
                 materialColor(androidx.appcompat.R.attr.colorPrimary,
                         Color.DKGRAY));
         type.setLetterSpacing(.08f);
@@ -399,8 +533,16 @@ public final class NotesActivity extends Activity {
         dateLp.topMargin = dp(18);
         details.addView(date, dateLp);
         card.addView(details);
+        card.setOnLongClickListener(v -> {
+            if (requireTransferIdle()) showNoteActions(note);
+            return true;
+        });
         card.setOnClickListener(v -> {
             if (!requireTransferIdle()) return;
+            if (note.deleted) {
+                showNoteActions(note);
+                return;
+            }
             NoteStore.Note selected = store.get(note.id);
             if (selected != null) {
                 if (selected.ink) editInk(selected); else edit(selected);
@@ -640,16 +782,33 @@ public final class NotesActivity extends Activity {
         toolbar.getMenu().add(0, MENU_SAVE, 0, "Save")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS
                         | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
-        if (noteId >= 0) {
-            toolbar.getMenu().add(0, MENU_DELETE, 1, "Delete")
-                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
-        }
+        toolbar.getMenu().add(0, MENU_PIN, 1, "Pin or unpin")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_MOVE, 2, "Move to folder")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_DELETE, 3, "Move to trash")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == MENU_SAVE) {
                 saveCurrent();
                 showList();
             } else if (item.getItemId() == MENU_DELETE) {
-                confirmDelete();
+                saveCurrent();
+                if (noteId >= 0) store.trash(noteId);
+                showList();
+            } else if (item.getItemId() == MENU_PIN || item.getItemId() == MENU_MOVE) {
+                saveCurrent();
+                if (noteId < 0) {
+                    Toast.makeText(this, "Write something first.", Toast.LENGTH_SHORT).show();
+                } else if (item.getItemId() == MENU_PIN) {
+                    NoteStore.NoteSummary current = summary(noteId);
+                    boolean pin = current == null || !current.pinned;
+                    store.setPinned(noteId, pin);
+                    Toast.makeText(this, pin ? "Pinned" : "Unpinned", Toast.LENGTH_SHORT).show();
+                } else {
+                    chooseFolder(noteId, () -> Toast.makeText(this, "Moved",
+                            Toast.LENGTH_SHORT).show());
+                }
             } else {
                 return false;
             }
@@ -657,17 +816,9 @@ public final class NotesActivity extends Activity {
         });
     }
 
-    private void confirmDelete() {
-        new MaterialAlertDialogBuilder(this)
-                .setTitle("Delete this note?")
-                .setMessage("This note will be permanently deleted from this device.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Delete", (dialog, which) -> {
-                    rememberListPosition();
-                    store.delete(noteId);
-                    showList();
-                })
-                .show();
+    private NoteStore.NoteSummary summary(long id) {
+        for (NoteStore.NoteSummary note : store.listSummaries()) if (note.id == id) return note;
+        return null;
     }
 
     private void addInkActions() {
@@ -789,8 +940,11 @@ public final class NotesActivity extends Activity {
         }
         if (noteId >= 0 || hasContent) {
             String inkJson = drawing ? ink.serialize() : "";
+            boolean created = noteId < 0;
             noteId = store.save(noteId, title.getText().toString(),
                     drawing ? "" : body.getText().toString(), drawing, inkJson);
+            // A note written while a folder is open belongs to that folder.
+            if (created && currentFolder() > 0) store.moveToFolder(noteId, currentFolder());
         }
     }
 
