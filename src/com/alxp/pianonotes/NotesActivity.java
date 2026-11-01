@@ -49,6 +49,16 @@ import java.util.List;
 public final class NotesActivity extends Activity {
     private static final int REQUEST_EXPORT = 10;
     private static final int REQUEST_IMPORT = 11;
+    private static final int REQUEST_IMAGE = 12;
+    private static final int REQUEST_CAMERA = 13;
+    private static final int REQUEST_XIAOMI = 14;
+    private static final int REQUEST_SHARE = 15;
+    private static final int REQUEST_UNLOCK = 16;
+    private static final int REQUEST_AUDIO_PERMISSION = 20;
+    private static final int MENU_REMIND = 20;
+    private static final int MENU_HIDE = 21;
+    private static final int MENU_SHARE = 22;
+    private static final int MENU_XIAOMI = 23;
     private static final String STATE_EDITOR = "editor";
     private static final String STATE_NOTE_ID = "note_id";
     private static final String STATE_DRAWING = "drawing";
@@ -67,6 +77,7 @@ public final class NotesActivity extends Activity {
     private static final int MENU_EMPTY_TRASH = 9;
     private static final String FILTER_PINNED = "Pinned";
     private static final String FILTER_TRASH = "Trash";
+    private static final String FILTER_HIDDEN = "Hidden";
     private static final String FOLDER_PREFIX = "folder:";
     private static final String FILTER_UNCATEGORIZED = FOLDER_PREFIX + "0";
     private static final int MENU_VIEW = 10;
@@ -82,6 +93,11 @@ public final class NotesActivity extends Activity {
     private EditText body;
     private InkView ink;
     private boolean drawing;
+    private MindMapView mindMap;
+    /** Hidden notes stay visible until the app leaves the screen. */
+    private boolean hiddenUnlocked;
+    private int pendingShareKind;
+    private java.io.File cameraFile;
     private boolean transferRunning;
     private int listScrollY;
     private ScrollView noteListScroll;
@@ -112,7 +128,7 @@ public final class NotesActivity extends Activity {
     }
 
     private void runInkAutosave() {
-        if (title == null || !drawing || ink == null) return;
+        if (title == null || !((drawing && ink != null) || mindMap != null)) return;
         try {
             saveCurrent();
         } catch (RuntimeException failure) {
@@ -147,12 +163,48 @@ public final class NotesActivity extends Activity {
                 return;
             }
             boolean restoredDrawing = state.getBoolean(STATE_DRAWING, false);
-            if (restoredDrawing) editInk(note); else edit(note);
+            if (note != null) openNote(note);
+            else if (restoredDrawing) editInk(null);
+            else edit(null);
         } else if (tasksTab) {
             showTasks();
         } else {
             showList();
         }
+        if (state == null) handleIntent(getIntent());
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIntent(intent);
+    }
+
+    /** Opens what a reminder or widget asked for. */
+    private void handleIntent(Intent intent) {
+        if (intent == null || store == null) return;
+        long id = intent.getLongExtra(Reminders.EXTRA_NOTE, -1);
+        if (id >= 0) {
+            saveCurrent();
+            NoteStore.Note note = store.get(id);
+            if (note != null) openNote(note);
+        } else if (intent.getBooleanExtra(NotesWidget.EXTRA_NEW, false)) {
+            saveCurrent();
+            if (intent.getBooleanExtra(NotesWidget.EXTRA_TASKS, false)) {
+                showTasks();
+                editTask(null);
+            } else {
+                edit(null);
+            }
+        } else if (intent.getBooleanExtra(NotesWidget.EXTRA_TASKS, false)) {
+            showTasks();
+        }
+    }
+
+    private void openNote(NoteStore.Note note) {
+        if (note.mindmap) editMindMap(note);
+        else if (note.ink) editInk(note);
+        else edit(note);
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {
@@ -204,6 +256,7 @@ public final class NotesActivity extends Activity {
         ink = null;
         drawing = false;
         tasksTab = false;
+        mindMap = null;
         base("Notes");
         root.addView(tabSwitch(false), tabSwitchParams());
         List<NoteStore.NoteSummary> notes = store.listSummaries();
@@ -213,6 +266,8 @@ public final class NotesActivity extends Activity {
         toolbar.getMenu().add(0, MENU_EXPORT, 0, "Export backup")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_IMPORT, 1, "Import backup")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_XIAOMI, 1, "Import from Xiaomi Notes")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_BACKUP_INFO, 2, "Automatic backup")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
@@ -233,6 +288,7 @@ public final class NotesActivity extends Activity {
             }
             else if (item.getItemId() == MENU_EXPORT) chooseExportDestination();
             else if (item.getItemId() == MENU_IMPORT) confirmImport();
+            else if (item.getItemId() == MENU_XIAOMI) chooseXiaomiImport();
             else if (item.getItemId() == MENU_BACKUP_INFO) showBackupInfo();
             else if (item.getItemId() == MENU_SEARCH) showSearchDialog();
             else return false;
@@ -252,8 +308,10 @@ public final class NotesActivity extends Activity {
             saveCurrent();
             new MaterialAlertDialogBuilder(this)
                     .setTitle("New note")
-                    .setItems(new String[]{"Text note", "Handwriting"}, (d, which) -> {
-                        if (which == 0) edit(null); else editInk(null);
+                    .setItems(new String[]{"Text note", "Handwriting", "Mind map"}, (d, which) -> {
+                        if (which == 0) edit(null);
+                        else if (which == 1) editInk(null);
+                        else editMindMap(null);
                     })
                     .show();
         });
@@ -272,6 +330,7 @@ public final class NotesActivity extends Activity {
         List<String> categories = new ArrayList<>(java.util.Arrays.asList(
                 "All", FILTER_PINNED, "Text", "Handwriting", FILTER_UNCATEGORIZED));
         for (NoteStore.Folder folder : folders) categories.add(FOLDER_PREFIX + folder.id);
+        categories.add(FILTER_HIDDEN);
         categories.add(FILTER_TRASH);
         if (activeFilter.startsWith(FOLDER_PREFIX) && !categories.contains(activeFilter)) {
             activeFilter = "All";
@@ -299,7 +358,14 @@ public final class NotesActivity extends Activity {
             if (wide) chipLp.setMargins(0, dp(2), dp(12), dp(2));
             else chipLp.setMargins(dp(4), dp(14), dp(6), dp(2));
             chipRow.addView(chip, chipLp);
-            chip.setOnClickListener(v -> { activeFilter = category; showList(); });
+            chip.setOnClickListener(v -> {
+                if (category.equals(FILTER_HIDDEN) && !hiddenUnlocked) {
+                    unlockHidden();
+                    return;
+                }
+                activeFilter = category;
+                showList();
+            });
         }
         MaterialButton newFolder = button(wide ? "+ New folder" : "+ Folder");
         newFolder.setCornerRadius(dp(22));
@@ -344,6 +410,7 @@ public final class NotesActivity extends Activity {
         List<NoteStore.NoteSummary> visibleNotes = new ArrayList<>();
         for (NoteStore.NoteSummary note : notes) {
             if (activeFilter.equals(FILTER_TRASH) != note.deleted) continue;
+            if (!note.deleted && activeFilter.equals(FILTER_HIDDEN) != note.hidden) continue;
             if (activeFilter.equals(FILTER_PINNED) && !note.pinned) continue;
             if (activeFilter.startsWith(FOLDER_PREFIX)
                     && note.folderId != currentFolder()) continue;
@@ -440,6 +507,7 @@ public final class NotesActivity extends Activity {
             case "All": return "All notes";
             case FILTER_UNCATEGORIZED: return "Uncategorized";
             case FILTER_TRASH: return "Recently deleted";
+            case FILTER_HIDDEN: return "🔒 Hidden notes";
             default: return category;
         }
     }
@@ -521,13 +589,17 @@ public final class NotesActivity extends Activity {
         new MaterialAlertDialogBuilder(this)
                 .setTitle(note.title.isEmpty() ? "Untitled" : note.title)
                 .setItems(new String[]{note.pinned ? "Unpin" : "Pin to top",
-                        "Move to folder", "Move to trash"}, (d, which) -> {
+                        "Move to folder", note.hidden ? "Unhide" : "Hide",
+                        "Move to trash"}, (d, which) -> {
                     rememberListPosition();
                     if (which == 0) {
                         store.setPinned(note.id, !note.pinned);
                         showList();
                     } else if (which == 1) {
                         chooseFolder(note.id, this::showList);
+                    } else if (which == 2) {
+                        store.setHidden(note.id, !note.hidden);
+                        showList();
                     } else {
                         store.trash(note.id);
                         showList();
@@ -573,7 +645,12 @@ public final class NotesActivity extends Activity {
         details.setPadding(dp(18), dp(18), dp(18), dp(18));
 
         TextView type = textView((note.pinned ? "PINNED · " : "")
-                + (note.ink ? "HANDWRITING" : "TEXT NOTE"), 11,
+                + (note.ink ? "HANDWRITING" : note.mindmap ? "MIND MAP" : "TEXT NOTE")
+                + (note.remindAt > System.currentTimeMillis() ? " · ⏰ "
+                        + android.text.format.DateUtils.formatDateTime(this, note.remindAt,
+                                android.text.format.DateUtils.FORMAT_SHOW_DATE
+                                | android.text.format.DateUtils.FORMAT_SHOW_TIME
+                                | android.text.format.DateUtils.FORMAT_ABBREV_ALL) : ""), 11,
                 materialColor(androidx.appcompat.R.attr.colorPrimary,
                         Color.DKGRAY));
         type.setLetterSpacing(.08f);
@@ -622,9 +699,7 @@ public final class NotesActivity extends Activity {
                 return;
             }
             NoteStore.Note selected = store.get(note.id);
-            if (selected != null) {
-                if (selected.ink) editInk(selected); else edit(selected);
-            }
+            if (selected != null) openNote(selected);
         });
         return card;
     }
@@ -724,10 +799,28 @@ public final class NotesActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_UNLOCK) {
+            if (resultCode == RESULT_OK) {
+                hiddenUnlocked = true;
+                activeFilter = FILTER_HIDDEN;
+                showList();
+            }
+            return;
+        }
+        if (requestCode == REQUEST_CAMERA) {
+            if (resultCode == RESULT_OK && cameraFile != null) {
+                insertImage(androidx.core.content.FileProvider.getUriForFile(this,
+                        "com.alxp.pianonotes.files", cameraFile));
+            }
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         if (requestCode == REQUEST_EXPORT) exportTo(uri);
         else if (requestCode == REQUEST_IMPORT) importFrom(uri);
+        else if (requestCode == REQUEST_IMAGE) insertImage(uri);
+        else if (requestCode == REQUEST_XIAOMI) importXiaomi(uri);
+        else if (requestCode == REQUEST_SHARE) shareTo(uri);
     }
 
     private void exportTo(Uri uri) {
@@ -778,6 +871,7 @@ public final class NotesActivity extends Activity {
     private void edit(NoteStore.Note note) {
         rememberListPosition();
         drawing = false;
+        mindMap = null;
         noteId = note == null ? -1 : note.id;
         openEditor(note == null ? "New note" : "Edit note");
         configureEditorToolbar();
@@ -813,6 +907,7 @@ public final class NotesActivity extends Activity {
         paperLp.gravity = Gravity.CENTER_HORIZONTAL;
         editorHost.addView(paper, paperLp);
         if (note != null) RichText.apply(body.getText(), note.spans);
+        Attachments.render(this, body.getText(), attachmentWidth());
         body.addTextChangedListener(new ListContinuation());
         body.setOnTouchListener(this::toggleCheckOnTap);
         editorHost.addView(formatBar(), editorHost.indexOfChild(paper));
@@ -850,6 +945,9 @@ public final class NotesActivity extends Activity {
         addFormat(bar, "⇥", "Increase indent", () -> indent(true));
         addFormat(bar, "⇤", "Decrease indent", () -> indent(false));
         addFormat(bar, "—", "Divider", this::insertDivider);
+        addFormat(bar, "🖼", "Insert picture", this::pickImage);
+        addFormat(bar, "📷", "Take photo", this::takePhoto);
+        addFormat(bar, "🎙", "Record audio", this::recordAudio);
         return scroller;
     }
 
@@ -936,6 +1034,11 @@ public final class NotesActivity extends Activity {
         if (event.getAction() != MotionEvent.ACTION_UP) return false;
         int offset = body.getOffsetForPosition(event.getX(), event.getY());
         Editable text = body.getText();
+        Attachments.AttachmentSpan attachment = Attachments.at(text, offset);
+        if (attachment != null) {
+            openAttachment(attachment);
+            return true;
+        }
         int start = RichText.lineStart(text, offset);
         int at = start + RichText.indentOf(line(text, start));
         String marker = RichText.markerOf(line(text, start));
@@ -992,6 +1095,7 @@ public final class NotesActivity extends Activity {
     private void editInk(NoteStore.Note note) {
         rememberListPosition();
         drawing = true;
+        mindMap = null;
         noteId = note == null ? -1 : note.id;
         openEditor(note == null ? "New ink note" : "Handwriting");
         configureEditorToolbar();
@@ -1036,7 +1140,13 @@ public final class NotesActivity extends Activity {
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.getMenu().add(0, MENU_MOVE, 2, "Move to folder")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
-        toolbar.getMenu().add(0, MENU_DELETE, 3, "Move to trash")
+        toolbar.getMenu().add(0, MENU_REMIND, 3, "Reminder")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_SHARE, 3, "Export as picture, PDF or Markdown")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_HIDE, 3, "Hide or unhide")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, MENU_DELETE, 4, "Move to trash")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == MENU_SAVE) {
@@ -1046,6 +1156,21 @@ public final class NotesActivity extends Activity {
                 saveCurrent();
                 if (noteId >= 0) store.trash(noteId);
                 showList();
+            } else if (item.getItemId() == MENU_SHARE) {
+                chooseShareKind();
+            } else if (item.getItemId() == MENU_REMIND || item.getItemId() == MENU_HIDE) {
+                saveCurrent();
+                if (noteId < 0) {
+                    Toast.makeText(this, "Write something first.", Toast.LENGTH_SHORT).show();
+                } else if (item.getItemId() == MENU_REMIND) {
+                    chooseReminder();
+                } else {
+                    NoteStore.NoteSummary current = summary(noteId);
+                    boolean hide = current == null || !current.hidden;
+                    store.setHidden(noteId, hide);
+                    Toast.makeText(this, hide ? "Hidden. Find it under Hidden notes."
+                            : "No longer hidden", Toast.LENGTH_SHORT).show();
+                }
             } else if (item.getItemId() == MENU_PIN || item.getItemId() == MENU_MOVE) {
                 saveCurrent();
                 if (noteId < 0) {
@@ -1092,7 +1217,7 @@ public final class NotesActivity extends Activity {
         view.setGravity(Gravity.TOP | Gravity.START);
         view.setFilters(new InputFilter[]{(source, start, end, dest, dstart, dend) -> {
             if (autosaveHandler != null) {
-                if (drawing) {
+                if (drawing || mindMap != null) {
                     scheduleInkAutosave();
                 } else {
                     autosaveHandler.removeCallbacks(textAutosave);
@@ -1139,6 +1264,17 @@ public final class NotesActivity extends Activity {
 
     private void saveCurrent() {
         if (title == null || store == null) return;
+        if (mindMap != null) {
+            boolean created = noteId < 0;
+            noteId = store.save(noteId, title.getText().toString(), mindMap.outline(), false,
+                    mindMap.serialize(), "");
+            if (created) {
+                store.setMindMap(noteId, true);
+                if (currentFolder() > 0) store.moveToFolder(noteId, currentFolder());
+            }
+            NotesWidget.refresh(this);
+            return;
+        }
         boolean hasContent = title.length() > 0;
         if (drawing) {
             hasContent |= ink.hasInk();
@@ -1153,6 +1289,7 @@ public final class NotesActivity extends Activity {
                     drawing ? "" : RichText.serialize(body.getText()));
             // A note written while a folder is open belongs to that folder.
             if (created && currentFolder() > 0) store.moveToFolder(noteId, currentFolder());
+            NotesWidget.refresh(this);
         }
     }
 
@@ -1201,6 +1338,8 @@ public final class NotesActivity extends Activity {
         ink = null;
         drawing = false;
         tasksTab = true;
+        mindMap = null;
+        NotesWidget.refresh(this);
         base("Tasks");
         root.addView(tabSwitch(true), tabSwitchParams());
         List<NoteStore.Task> tasks = store.listTasks();
@@ -1360,6 +1499,348 @@ public final class NotesActivity extends Activity {
         if (!requireTransferIdle()) return;
         if (title != null) saveAndReturn();
         else showList();
+    }
+
+    @Override protected void onStop() {
+        hiddenUnlocked = false;
+        if (activeFilter.equals(FILTER_HIDDEN)) activeFilter = "All";
+        super.onStop();
+    }
+
+    @Override protected void onRestart() {
+        super.onRestart();
+        // Hidden notes lock again once the app has left the screen.
+        if (title == null && !tasksTab) showList();
+    }
+
+    // --- Hidden notes -------------------------------------------------------
+
+    private void unlockHidden() {
+        android.app.KeyguardManager keyguard = getSystemService(android.app.KeyguardManager.class);
+        if (keyguard == null || !keyguard.isDeviceSecure()) {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle("Set a screen lock first")
+                    .setMessage("Hidden notes open with your PIN, pattern, password or "
+                            + "fingerprint. Set a screen lock in Settings to use them.")
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        Intent confirm = keyguard.createConfirmDeviceCredentialIntent("Hidden notes",
+                "Unlock to see your hidden notes");
+        startActivityForResult(confirm, REQUEST_UNLOCK);
+    }
+
+    // --- Reminders ----------------------------------------------------------
+
+    private void chooseReminder() {
+        NoteStore.Note note = store.get(noteId);
+        long current = note == null ? 0 : note.remindAt;
+        if (current > System.currentTimeMillis()) {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle("Reminder")
+                    .setMessage("Set for " + android.text.format.DateUtils.formatDateTime(this,
+                            current, android.text.format.DateUtils.FORMAT_SHOW_DATE
+                                    | android.text.format.DateUtils.FORMAT_SHOW_TIME))
+                    .setNegativeButton("Remove", (d, w) -> setReminder(0))
+                    .setPositiveButton("Change", (d, w) -> pickReminderTime(current))
+                    .show();
+        } else {
+            pickReminderTime(System.currentTimeMillis() + 60 * 60 * 1000);
+        }
+    }
+
+    private void pickReminderTime(long initial) {
+        java.util.Calendar when = java.util.Calendar.getInstance();
+        when.setTimeInMillis(initial);
+        new android.app.DatePickerDialog(this, (view, year, month, day) -> {
+            when.set(year, month, day);
+            new android.app.TimePickerDialog(this, (picker, hour, minute) -> {
+                when.set(java.util.Calendar.HOUR_OF_DAY, hour);
+                when.set(java.util.Calendar.MINUTE, minute);
+                when.set(java.util.Calendar.SECOND, 0);
+                if (when.getTimeInMillis() <= System.currentTimeMillis()) {
+                    Toast.makeText(this, "Pick a time in the future.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                setReminder(when.getTimeInMillis());
+            }, when.get(java.util.Calendar.HOUR_OF_DAY), when.get(java.util.Calendar.MINUTE),
+                    android.text.format.DateFormat.is24HourFormat(this)).show();
+        }, when.get(java.util.Calendar.YEAR), when.get(java.util.Calendar.MONTH),
+                when.get(java.util.Calendar.DAY_OF_MONTH)).show();
+    }
+
+    private void setReminder(long when) {
+        store.setReminder(noteId, when);
+        Reminders.schedule(this, noteId, when);
+        if (when > 0 && android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(
+                android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 0);
+        }
+        Toast.makeText(this, when == 0 ? "Reminder removed" : "Reminder set",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    // --- Pictures and recordings ---------------------------------------------
+
+    private int attachmentWidth() {
+        return Math.min(dp(560), (isWide() ? contentWidth() / 2 : contentWidth()) - dp(64));
+    }
+
+    private void pickImage() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        startActivityForResult(Intent.createChooser(intent, "Insert picture"), REQUEST_IMAGE);
+    }
+
+    private void takePhoto() {
+        java.io.File folder = new java.io.File(getCacheDir(), "camera");
+        folder.mkdirs();
+        cameraFile = new java.io.File(folder, "photo.jpg");
+        Intent intent = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT,
+                androidx.core.content.FileProvider.getUriForFile(this,
+                        "com.alxp.pianonotes.files", cameraFile));
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQUEST_CAMERA);
+        } catch (android.content.ActivityNotFoundException noCamera) {
+            Toast.makeText(this, "No camera app is installed.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void insertImage(Uri uri) {
+        if (body == null) return;
+        try {
+            insertAttachment(Attachments.IMAGE, Attachments.importImage(this, uri));
+        } catch (java.io.IOException | SecurityException failure) {
+            Toast.makeText(this, "Could not add the picture: " + failure.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void recordAudio() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},
+                    REQUEST_AUDIO_PERMISSION);
+            return;
+        }
+        AudioNotes.record(this, name -> insertAttachment(Attachments.AUDIO, name));
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQUEST_AUDIO_PERMISSION && results.length > 0
+                && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            recordAudio();
+        }
+    }
+
+    /** Puts the attachment on a line of its own at the cursor. */
+    private void insertAttachment(String kind, String name) {
+        if (body == null) return;
+        Editable text = body.getText();
+        int at = Math.max(0, body.getSelectionEnd());
+        String before = at > 0 && text.charAt(at - 1) != '\n' ? "\n" : "";
+        String line = before + Attachments.token(kind, name) + "\n";
+        text.insert(at, line);
+        body.setSelection(Math.min(text.length(), at + line.length()));
+        Attachments.render(this, text, attachmentWidth());
+        scheduleTextAutosave();
+    }
+
+    private void openAttachment(Attachments.AttachmentSpan attachment) {
+        if (Attachments.AUDIO.equals(attachment.kind)) {
+            AudioNotes.play(this, attachment.name);
+            return;
+        }
+        android.widget.ImageView image = new android.widget.ImageView(this);
+        image.setAdjustViewBounds(true);
+        image.setImageURI(Uri.fromFile(Attachments.file(this, attachment.name)));
+        new MaterialAlertDialogBuilder(this)
+                .setView(image)
+                .setNegativeButton("Remove", (d, w) -> removeAttachment(attachment))
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    private void removeAttachment(Attachments.AttachmentSpan attachment) {
+        Editable text = body.getText();
+        int start = text.getSpanStart(attachment);
+        int end = text.getSpanEnd(attachment);
+        if (start < 0) return;
+        if (end < text.length() && text.charAt(end) == '\n') end++;
+        text.delete(start, end);
+        scheduleTextAutosave();
+    }
+
+    // --- Export ---------------------------------------------------------------
+
+    private void chooseShareKind() {
+        saveCurrent();
+        String[] kinds = drawing ? new String[]{"Picture", "PDF"}
+                : new String[]{"Picture", "PDF", "Markdown"};
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Export note")
+                .setItems(kinds, (d, which) -> {
+                    pendingShareKind = which;
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType(NoteExport.mimeType(which));
+                    intent.putExtra(Intent.EXTRA_TITLE,
+                            NoteExport.fileName(title.getText().toString(), which));
+                    startActivityForResult(intent, REQUEST_SHARE);
+                })
+                .show();
+    }
+
+    private void shareTo(Uri uri) {
+        if (title == null) return;
+        String heading = title.getText().toString();
+        try (java.io.OutputStream out = getContentResolver().openOutputStream(uri)) {
+            if (out == null) throw new java.io.IOException("Cannot write there.");
+            if (pendingShareKind == NoteExport.MARKDOWN) {
+                android.text.Spanned text = body != null ? body.getText()
+                        : new android.text.SpannableString(mindMap != null ? mindMap.outline() : "");
+                NoteExport.writeMarkdown(heading, text, out);
+            } else {
+                android.graphics.Bitmap picture = drawing ? NoteExport.renderView(ink)
+                        : mindMap != null ? NoteExport.renderView(mindMap)
+                        : NoteExport.renderText(heading, body.getText(), dp(720),
+                                getResources().getDisplayMetrics().density);
+                if (pendingShareKind == NoteExport.PDF) NoteExport.writePdf(picture, out);
+                else NoteExport.writeImage(picture, out);
+            }
+            Toast.makeText(this, "Exported", Toast.LENGTH_SHORT).show();
+        } catch (java.io.IOException | RuntimeException failure) {
+            Toast.makeText(this, "Export failed: " + failure.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // --- Import from Xiaomi Notes --------------------------------------------
+
+    private void chooseXiaomiImport() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Import from Xiaomi Notes")
+                .setMessage("Choose Xiaomi Notes' note.db, or a zip or tar backup that contains "
+                        + "it. Notes are added to the ones you have. Folders, pins, reminders, "
+                        + "checklists and text styles come across; handwriting pages and "
+                        + "pictures cannot.")
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton("Choose file", (d, w) -> {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    startActivityForResult(intent, REQUEST_XIAOMI);
+                })
+                .show();
+    }
+
+    private void importXiaomi(Uri uri) {
+        if (!requireTransferIdle()) return;
+        transferRunning = true;
+        Toast.makeText(this, "Importing…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            String message;
+            try {
+                XiaomiImport.Result result = XiaomiImport.run(this, uri, store);
+                message = "Imported " + result.notes + (result.notes == 1 ? " note" : " notes")
+                        + (result.folders > 0 ? " and " + result.folders + " folders" : "") + ".";
+            } catch (Exception failure) {
+                message = "Import failed: " + failure.getMessage();
+            }
+            String done = message;
+            runOnUiThread(() -> {
+                transferRunning = false;
+                if (isDestroyed()) return;
+                Toast.makeText(this, done, Toast.LENGTH_LONG).show();
+                if (title == null && !tasksTab) showList();
+                NotesWidget.refresh(this);
+            });
+        }, "xiaomi-import").start();
+    }
+
+    // --- Mind maps --------------------------------------------------------------
+
+    private void editMindMap(NoteStore.Note note) {
+        rememberListPosition();
+        drawing = false;
+        noteId = note == null ? -1 : note.id;
+        openEditor(note == null ? "New mind map" : "Mind map");
+        configureEditorToolbar();
+        title = field("", note == null ? "" : note.title, false);
+        TextInputLayout titleLayout = outlinedField("Title", title);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(editorWidth(), -2);
+        titleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        titleLp.bottomMargin = dp(12);
+        editorHost.addView(titleLayout, titleLp);
+
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        LinearLayout bar = new LinearLayout(this);
+        bar.setPadding(0, 0, 0, dp(8));
+        scroller.addView(bar);
+        MindMapView map = new MindMapView(this, new MindMapView.Listener() {
+            @Override public void onSelected(MindMapView.Node node) {}
+
+            @Override public void onEdit(MindMapView.Node node) {
+                editTopic(node);
+            }
+
+            @Override public void onChanged() {
+                scheduleInkAutosave();
+            }
+        });
+        mindMap = map;
+        if (note != null) map.restore(note.inkJson);
+        addMapAction(bar, "+ Child", map::addChild);
+        addMapAction(bar, "+ Sibling", map::addSibling);
+        addMapAction(bar, "Edit", () -> editTopic(map.selected()));
+        addMapAction(bar, "Fold", map::toggleCollapsed);
+        addMapAction(bar, "Delete", map::deleteSelected);
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(editorWidth(), -2);
+        barLp.gravity = Gravity.CENTER_HORIZONTAL;
+        editorHost.addView(scroller, barLp);
+
+        MaterialCardView paper = card();
+        paper.setRadius(dp(30));
+        paper.setCardBackgroundColor(materialColor(
+                com.google.android.material.R.attr.colorSurfaceContainerLowest, 0xfffffefd));
+        paper.addView(map, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams paperLp = new LinearLayout.LayoutParams(editorWidth(), 0, 1);
+        paperLp.gravity = Gravity.CENTER_HORIZONTAL;
+        paperLp.bottomMargin = dp(12);
+        editorHost.addView(paper, paperLp);
+    }
+
+    private void addMapAction(LinearLayout bar, String label, Runnable action) {
+        MaterialButton button = button(label);
+        button.setCornerRadius(dp(16));
+        setTonalButton(button);
+        button.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(44));
+        lp.setMargins(0, 0, dp(6), 0);
+        bar.addView(button, lp);
+    }
+
+    private void editTopic(MindMapView.Node node) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(node.text);
+        input.selectAll();
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Topic")
+                .setView(input, dp(24), dp(8), dp(24), 0)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    if (mindMap != null) mindMap.setText(node, input.getText().toString());
+                })
+                .show();
+        input.requestFocus();
     }
 
     @Override protected void onPause() {

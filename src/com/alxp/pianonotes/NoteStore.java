@@ -12,7 +12,7 @@ import java.util.List;
 
 final class NoteStore extends SQLiteOpenHelper {
     private static final String DATABASE = "piano_notes.db";
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
     /** Notes in the trash longer than this are deleted for good. */
     private static final long TRASH_DAYS_MS = 30L * 24 * 60 * 60 * 1000;
 
@@ -32,6 +32,14 @@ final class NoteStore extends SQLiteOpenHelper {
         addOrganizing(db);
         addRichText(db);
         addTasks(db);
+        addExtras(db);
+    }
+
+    /** Schema 5: reminders, hidden notes and mind maps. */
+    private static void addExtras(SQLiteDatabase db) {
+        db.execSQL("ALTER TABLE notes ADD COLUMN remind_at INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("ALTER TABLE notes ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("ALTER TABLE notes ADD COLUMN mindmap INTEGER NOT NULL DEFAULT 0");
     }
 
     /** Schema 4: the to-do list on the Tasks tab. */
@@ -60,10 +68,11 @@ final class NoteStore extends SQLiteOpenHelper {
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        if (newVersion == 4 && oldVersion >= 1 && oldVersion <= 3) {
+        if (newVersion == 5 && oldVersion >= 1 && oldVersion <= 4) {
             if (oldVersion < 2) addOrganizing(db);
             if (oldVersion < 3) addRichText(db);
-            addTasks(db);
+            if (oldVersion < 4) addTasks(db);
+            addExtras(db);
             return;
         }
         // Fail closed until an explicit forward migration is added. SQLiteOpenHelper
@@ -98,12 +107,16 @@ final class NoteStore extends SQLiteOpenHelper {
         try (Cursor cursor = getReadableDatabase().rawQuery(
                 "SELECT _id, title, CASE WHEN is_ink != 0 THEN 'Ink page' "
                         + "ELSE substr(body, 1, 90) END, is_ink, updated, "
-                        + "folder_id, pinned, deleted "
+                        + "folder_id, pinned, deleted, remind_at, hidden, mindmap "
                         + "FROM notes ORDER BY pinned DESC, updated DESC, _id DESC", null)) {
             while (cursor.moveToNext()) {
-                result.add(new NoteSummary(cursor.getLong(0), cursor.getString(1),
+                NoteSummary summary = new NoteSummary(cursor.getLong(0), cursor.getString(1),
                         cursor.getString(2), cursor.getInt(3) != 0, cursor.getLong(4),
-                        cursor.getLong(5), cursor.getInt(6) != 0, cursor.getLong(7) != 0));
+                        cursor.getLong(5), cursor.getInt(6) != 0, cursor.getLong(7) != 0);
+                summary.remindAt = cursor.getLong(8);
+                summary.hidden = cursor.getInt(9) != 0;
+                summary.mindmap = cursor.getInt(10) != 0;
+                result.add(summary);
             }
         }
         return result;
@@ -111,12 +124,16 @@ final class NoteStore extends SQLiteOpenHelper {
 
     Note get(long id) {
         try (Cursor cursor = getReadableDatabase().query("notes",
-                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated", "spans"},
+                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated", "spans",
+                        "mindmap", "remind_at"},
                 "_id=?", new String[]{Long.toString(id)}, null, null, null)) {
             if (!cursor.moveToFirst()) return null;
-            return new Note(cursor.getLong(0), cursor.getString(1), cursor.getString(2),
+            Note note = new Note(cursor.getLong(0), cursor.getString(1), cursor.getString(2),
                     cursor.getInt(3) != 0, cursor.getString(4), cursor.getLong(5),
                     cursor.getString(6));
+            note.mindmap = cursor.getInt(7) != 0;
+            note.remindAt = cursor.getLong(8);
+            return note;
         }
     }
 
@@ -136,6 +153,46 @@ final class NoteStore extends SQLiteOpenHelper {
         ContentValues values = new ContentValues();
         values.put("pinned", pinned ? 1 : 0);
         update(id, values);
+    }
+
+    /** Keeps an imported note's original date. */
+    void setUpdated(long id, long when) {
+        if (when <= 0) return;
+        ContentValues values = new ContentValues();
+        values.put("updated", when);
+        update(id, values);
+    }
+
+    void setReminder(long id, long when) {
+        ContentValues values = new ContentValues();
+        values.put("remind_at", when);
+        update(id, values);
+    }
+
+    void setHidden(long id, boolean hidden) {
+        ContentValues values = new ContentValues();
+        values.put("hidden", hidden ? 1 : 0);
+        values.put("pinned", 0);
+        update(id, values);
+    }
+
+    void setMindMap(long id, boolean mindmap) {
+        ContentValues values = new ContentValues();
+        values.put("mindmap", mindmap ? 1 : 0);
+        update(id, values);
+    }
+
+    /** Notes with a reminder still to come, for rescheduling after a reboot. */
+    List<long[]> pendingReminders() {
+        List<long[]> result = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT _id, remind_at FROM notes WHERE remind_at > ? AND deleted = 0",
+                new String[]{Long.toString(System.currentTimeMillis())})) {
+            while (cursor.moveToNext()) {
+                result.add(new long[]{cursor.getLong(0), cursor.getLong(1)});
+            }
+        }
+        return result;
     }
 
     void moveToFolder(long id, long folderId) {
@@ -253,6 +310,8 @@ final class NoteStore extends SQLiteOpenHelper {
         final String inkJson;
         final long updated;
         final String spans;
+        boolean mindmap;
+        long remindAt;
 
         Note(long id, String title, String body, boolean ink, String inkJson, long updated) {
             this(id, title, body, ink, inkJson, updated, "");
@@ -280,6 +339,9 @@ final class NoteStore extends SQLiteOpenHelper {
         final long folderId;
         final boolean pinned;
         final boolean deleted;
+        long remindAt;
+        boolean hidden;
+        boolean mindmap;
 
         NoteSummary(long id, String title, String preview, boolean ink, long updated,
                 long folderId, boolean pinned, boolean deleted) {
