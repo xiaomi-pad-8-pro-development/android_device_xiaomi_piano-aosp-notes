@@ -157,7 +157,10 @@ final class NotesTransfer {
         }
         int pointCount = 0;
         for (int i = 0; i < strokes.length(); i++) {
-            org.json.JSONArray points = strokes.getJSONArray(i);
+            // Strokes are point arrays, or objects with the pen and its points.
+            Object stroke = strokes.get(i);
+            org.json.JSONArray points = stroke instanceof JSONObject
+                    ? ((JSONObject) stroke).getJSONArray("pts") : strokes.getJSONArray(i);
             pointCount += points.length();
             if (pointCount > MAX_POINTS_PER_NOTE) {
                 throw new IOException("The backup contains too many ink points.");
@@ -168,8 +171,8 @@ final class NotesTransfer {
                 double y = point.getDouble("y");
                 double pressure = point.getDouble("p");
                 if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(pressure)
-                        || x < 0 || x > NotesActivity.InkView.PAGE_WIDTH
-                        || y < 0 || y > NotesActivity.InkView.PAGE_HEIGHT
+                        || x < 0 || x > InkView.PAGE_WIDTH
+                        || y < 0 || y > InkView.PAGE_HEIGHT
                         || pressure < 0) {
                     throw new IOException("The backup contains invalid ink data.");
                 }
