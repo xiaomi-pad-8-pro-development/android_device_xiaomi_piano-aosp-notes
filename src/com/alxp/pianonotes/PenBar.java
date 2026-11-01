@@ -1,4 +1,4 @@
-package org.lineageos.pianonotes;
+package com.alxp.pianonotes;
 
 import android.app.Activity;
 import android.content.SharedPreferences;

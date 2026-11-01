@@ -1,4 +1,4 @@
-package org.lineageos.pianonotes;
+package com.alxp.pianonotes;
 
 import android.graphics.Typeface;
 import android.text.Editable;

@@ -1,4 +1,4 @@
-package org.lineageos.pianonotes;
+package com.alxp.pianonotes;
 
 import android.content.ContentResolver;
 import android.content.Context;
