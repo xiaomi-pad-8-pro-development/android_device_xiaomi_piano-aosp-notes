@@ -55,6 +55,7 @@ public final class NotesActivity extends Activity {
     private static final String STATE_LIST_SCROLL = "list_scroll";
     private static final String STATE_FILTER = "filter";
     private static final String STATE_SEARCH = "search";
+    private static final String STATE_TASKS = "tasks";
     private static final int MENU_SAVE = 1;
     private static final int MENU_DELETE = 2;
     private static final int MENU_EXPORT = 3;
@@ -86,6 +87,9 @@ public final class NotesActivity extends Activity {
     private ScrollView noteListScroll;
     private String activeFilter = "All";
     private String searchQuery = "";
+    /** The Tasks tab is showing instead of the note list. */
+    private boolean tasksTab;
+    private boolean showDoneTasks = true;
     private Handler autosaveHandler;
     private String lastSavedTitle = "";
     private String lastSavedBody = "";
@@ -133,6 +137,7 @@ public final class NotesActivity extends Activity {
         if (state != null) {
             activeFilter = state.getString(STATE_FILTER, "All");
             searchQuery = state.getString(STATE_SEARCH, "");
+            tasksTab = state.getBoolean(STATE_TASKS, false);
         }
         if (state != null && state.getBoolean(STATE_EDITOR, false)) {
             long restoredId = state.getLong(STATE_NOTE_ID, -1);
@@ -143,6 +148,8 @@ public final class NotesActivity extends Activity {
             }
             boolean restoredDrawing = state.getBoolean(STATE_DRAWING, false);
             if (restoredDrawing) editInk(note); else edit(note);
+        } else if (tasksTab) {
+            showTasks();
         } else {
             showList();
         }
@@ -159,6 +166,7 @@ public final class NotesActivity extends Activity {
                 ? listScrollY : noteListScroll.getScrollY());
         state.putString(STATE_FILTER, activeFilter);
         state.putString(STATE_SEARCH, searchQuery);
+        state.putBoolean(STATE_TASKS, tasksTab && title == null);
         super.onSaveInstanceState(state);
     }
 
@@ -195,7 +203,9 @@ public final class NotesActivity extends Activity {
         body = null;
         ink = null;
         drawing = false;
+        tasksTab = false;
         base("Notes");
+        root.addView(tabSwitch(false), tabSwitchParams());
         List<NoteStore.NoteSummary> notes = store.listSummaries();
         int live = 0;
         for (NoteStore.NoteSummary note : notes) if (!note.deleted) live++;
@@ -1144,6 +1154,206 @@ public final class NotesActivity extends Activity {
             // A note written while a folder is open belongs to that folder.
             if (created && currentFolder() > 0) store.moveToFolder(noteId, currentFolder());
         }
+    }
+
+    // --- Tasks tab ----------------------------------------------------------
+
+    /** The Notes | Tasks switch at the top of both lists, as in Xiaomi Notes. */
+    private View tabSwitch(boolean tasks) {
+        com.google.android.material.button.MaterialButtonToggleGroup group =
+                new com.google.android.material.button.MaterialButtonToggleGroup(this);
+        group.setSingleSelection(true);
+        group.setSelectionRequired(true);
+        MaterialButton notesTab = tabButton("Notes");
+        MaterialButton tasksButton = tabButton("Tasks");
+        group.addView(notesTab, new LinearLayout.LayoutParams(dp(120), dp(44)));
+        group.addView(tasksButton, new LinearLayout.LayoutParams(dp(120), dp(44)));
+        group.check((tasks ? tasksButton : notesTab).getId());
+        group.addOnButtonCheckedListener((g, id, checked) -> {
+            if (!checked || !requireTransferIdle()) return;
+            if (id == tasksButton.getId() && !tasksTab) showTasks();
+            else if (id == notesTab.getId() && tasksTab) showList();
+        });
+        return group;
+    }
+
+    private MaterialButton tabButton(String text) {
+        MaterialButton b = new MaterialButton(this, null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        b.setId(View.generateViewId());
+        b.setText(text);
+        return b;
+    }
+
+    private LinearLayout.LayoutParams tabSwitchParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+        lp.gravity = Gravity.CENTER_HORIZONTAL;
+        lp.setMargins(0, 0, 0, dp(4));
+        return lp;
+    }
+
+    private void showTasks() {
+        cancelEditorAutosaves();
+        saveCurrent();
+        noteId = -1;
+        title = null;
+        body = null;
+        ink = null;
+        drawing = false;
+        tasksTab = true;
+        base("Tasks");
+        root.addView(tabSwitch(true), tabSwitchParams());
+        List<NoteStore.Task> tasks = store.listTasks();
+        int open = 0;
+        for (NoteStore.Task task : tasks) if (!task.done) open++;
+        toolbar.setSubtitle(open == 1 ? "1 task to do" : open + " tasks to do");
+        toolbar.getMenu().add(0, 1, 0, showDoneTasks ? "Hide completed" : "Show completed")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.getMenu().add(0, 2, 1, "Delete completed")
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+        toolbar.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == 1) {
+                showDoneTasks = !showDoneTasks;
+                showTasks();
+            } else if (item.getItemId() == 2) {
+                new MaterialAlertDialogBuilder(this)
+                        .setTitle("Delete completed tasks?")
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton("Delete", (d, w) -> {
+                            store.deleteDoneTasks();
+                            showTasks();
+                        })
+                        .show();
+            } else {
+                return false;
+            }
+            return true;
+        });
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, dp(12), 0, dp(96));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setClipToPadding(false);
+        FrameLayout frame = new FrameLayout(this);
+        scroll.addView(frame, new ScrollView.LayoutParams(-1, -2));
+        frame.addView(content, new FrameLayout.LayoutParams(contentWidth(), -2,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL));
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        boolean doneHeader = false;
+        for (NoteStore.Task task : tasks) {
+            if (task.done && !doneHeader) {
+                doneHeader = true;
+                TextView section = textView("COMPLETED · " + (tasks.size() - open), 12,
+                        materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                                Color.GRAY));
+                section.setLetterSpacing(.08f);
+                section.setPadding(dp(4), dp(24), dp(4), dp(8));
+                section.setOnClickListener(v -> { showDoneTasks = !showDoneTasks; showTasks(); });
+                content.addView(section, new LinearLayout.LayoutParams(-1, -2));
+                if (!showDoneTasks) break;
+            }
+            content.addView(taskRow(task));
+        }
+        if (tasks.isEmpty()) {
+            TextView empty = textView("No tasks yet. Tap New task to add one.", 15,
+                    materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                            Color.GRAY));
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(16), dp(64), dp(16), dp(16));
+            content.addView(empty, new LinearLayout.LayoutParams(-1, -2));
+        }
+
+        com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton fab =
+                new com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton(this);
+        fab.setText("New task");
+        fab.setIconResource(R.drawable.ic_note_add_24);
+        fab.setOnClickListener(v -> editTask(null));
+        FrameLayout.LayoutParams fabLp = new FrameLayout.LayoutParams(-2, -2,
+                Gravity.BOTTOM | Gravity.END);
+        fabLp.setMargins(dp(24), dp(24), dp(32), dp(32));
+        screen.addView(fab, fabLp);
+    }
+
+    private View taskRow(NoteStore.Task task) {
+        MaterialCardView card = card();
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), dp(4), dp(16), dp(4));
+        com.google.android.material.checkbox.MaterialCheckBox check =
+                new com.google.android.material.checkbox.MaterialCheckBox(this);
+        check.setChecked(task.done);
+        check.setOnCheckedChangeListener((b, checked) -> {
+            store.setTaskDone(task.id, checked);
+            // Let the tick animation play before the task moves to its section.
+            b.postDelayed(this::showTasks, 250);
+        });
+        row.addView(check, new LinearLayout.LayoutParams(-2, -2));
+        TextView text = textView(task.text, 16, materialColor(task.done
+                ? com.google.android.material.R.attr.colorOnSurfaceVariant
+                : com.google.android.material.R.attr.colorOnSurface, Color.DKGRAY));
+        if (task.done) {
+            text.setPaintFlags(text.getPaintFlags() | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
+        }
+        text.setPadding(dp(4), dp(12), 0, dp(12));
+        row.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
+        card.addView(row);
+        card.setOnClickListener(v -> editTask(task));
+        card.setOnLongClickListener(v -> {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle(task.text)
+                    .setItems(new String[]{"Edit", "Delete"}, (d, which) -> {
+                        if (which == 0) editTask(task);
+                        else { store.deleteTask(task.id); showTasks(); }
+                    })
+                    .show();
+            return true;
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(4), 0, dp(4));
+        card.setLayoutParams(lp);
+        return card;
+    }
+
+    /** Adds a task, or edits one; Enter saves and keeps the box open for the next task. */
+    private void editTask(NoteStore.Task task) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("Task");
+        input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        if (task != null) input.setText(task.text);
+        input.setSelection(input.getText().length());
+        FrameLayout box = new FrameLayout(this);
+        box.setPadding(dp(24), dp(8), dp(24), 0);
+        box.addView(input);
+        androidx.appcompat.app.AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(task == null ? "New task" : "Edit task")
+                .setView(box)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (d, w) -> saveTask(task, input))
+                .create();
+        input.setOnEditorActionListener((v, action, event) -> {
+            saveTask(task, input);
+            if (task == null && !input.getText().toString().trim().isEmpty()) {
+                input.setText("");
+            } else {
+                dialog.dismiss();
+            }
+            return true;
+        });
+        dialog.getWindow().setSoftInputMode(
+                android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        dialog.show();
+        input.requestFocus();
+    }
+
+    private void saveTask(NoteStore.Task task, EditText input) {
+        String text = input.getText().toString().trim();
+        if (text.isEmpty()) return;
+        if (task == null) store.addTask(text); else store.setTaskText(task.id, text);
+        showTasks();
     }
 
     @Override public void onBackPressed() {

@@ -12,7 +12,7 @@ import java.util.List;
 
 final class NoteStore extends SQLiteOpenHelper {
     private static final String DATABASE = "piano_notes.db";
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     /** Notes in the trash longer than this are deleted for good. */
     private static final long TRASH_DAYS_MS = 30L * 24 * 60 * 60 * 1000;
 
@@ -31,6 +31,17 @@ final class NoteStore extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX notes_updated_idx ON notes(updated DESC)");
         addOrganizing(db);
         addRichText(db);
+        addTasks(db);
+    }
+
+    /** Schema 4: the to-do list on the Tasks tab. */
+    private static void addTasks(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE tasks ("
+                + "_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "text TEXT NOT NULL,"
+                + "done INTEGER NOT NULL DEFAULT 0,"
+                + "created INTEGER NOT NULL,"
+                + "done_at INTEGER NOT NULL DEFAULT 0)");
     }
 
     /** Schema 3: character styles of text notes. */
@@ -49,9 +60,10 @@ final class NoteStore extends SQLiteOpenHelper {
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        if (newVersion == 3 && (oldVersion == 1 || oldVersion == 2)) {
-            if (oldVersion == 1) addOrganizing(db);
-            addRichText(db);
+        if (newVersion == 4 && oldVersion >= 1 && oldVersion <= 3) {
+            if (oldVersion < 2) addOrganizing(db);
+            if (oldVersion < 3) addRichText(db);
+            addTasks(db);
             return;
         }
         // Fail closed until an explicit forward migration is added. SQLiteOpenHelper
@@ -279,6 +291,69 @@ final class NoteStore extends SQLiteOpenHelper {
             this.folderId = folderId;
             this.pinned = pinned;
             this.deleted = deleted;
+        }
+    }
+
+    // --- Tasks --------------------------------------------------------------
+
+    List<Task> listTasks() {
+        List<Task> result = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().query("tasks",
+                new String[]{"_id", "text", "done", "created", "done_at"},
+                null, null, null, null, "done ASC, done_at DESC, created DESC")) {
+            while (cursor.moveToNext()) {
+                result.add(new Task(cursor.getLong(0), cursor.getString(1),
+                        cursor.getInt(2) != 0, cursor.getLong(3), cursor.getLong(4)));
+            }
+        }
+        return result;
+    }
+
+    long addTask(String text) {
+        ContentValues values = new ContentValues();
+        values.put("text", text.trim());
+        values.put("created", System.currentTimeMillis());
+        return getWritableDatabase().insertOrThrow("tasks", null, values);
+    }
+
+    void setTaskText(long id, String text) {
+        ContentValues values = new ContentValues();
+        values.put("text", text.trim());
+        updateTask(id, values);
+    }
+
+    void setTaskDone(long id, boolean done) {
+        ContentValues values = new ContentValues();
+        values.put("done", done ? 1 : 0);
+        values.put("done_at", done ? System.currentTimeMillis() : 0);
+        updateTask(id, values);
+    }
+
+    void deleteTask(long id) {
+        getWritableDatabase().delete("tasks", "_id=?", new String[]{Long.toString(id)});
+    }
+
+    void deleteDoneTasks() {
+        getWritableDatabase().delete("tasks", "done != 0", null);
+    }
+
+    private void updateTask(long id, ContentValues values) {
+        getWritableDatabase().update("tasks", values, "_id=?", new String[]{Long.toString(id)});
+    }
+
+    static final class Task {
+        final long id;
+        final String text;
+        final boolean done;
+        final long created;
+        final long doneAt;
+
+        Task(long id, String text, boolean done, long created, long doneAt) {
+            this.id = id;
+            this.text = text;
+            this.done = done;
+            this.created = created;
+            this.doneAt = doneAt;
         }
     }
 
