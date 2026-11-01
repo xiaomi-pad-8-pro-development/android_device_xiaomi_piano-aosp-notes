@@ -139,12 +139,15 @@ final class NoteStore extends SQLiteOpenHelper {
 
     void forEachNote(NoteConsumer consumer) throws Exception {
         try (Cursor cursor = getReadableDatabase().query("notes",
-                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated", "spans"},
+                new String[]{"_id", "title", "body", "is_ink", "ink_json", "updated", "spans",
+                        "mindmap"},
                 null, null, null, null, "updated DESC, _id DESC")) {
             while (cursor.moveToNext()) {
-                consumer.accept(new Note(cursor.getLong(0), cursor.getString(1),
+                Note note = new Note(cursor.getLong(0), cursor.getString(1),
                         cursor.getString(2), cursor.getInt(3) != 0,
-                        cursor.getString(4), cursor.getLong(5), cursor.getString(6)));
+                        cursor.getString(4), cursor.getLong(5), cursor.getString(6));
+                note.mindmap = cursor.getInt(7) != 0;
+                consumer.accept(note);
             }
         }
     }
@@ -286,6 +289,7 @@ final class NoteStore extends SQLiteOpenHelper {
                 values.put("ink_json", note.inkJson);
                 values.put("updated", note.updated);
                 values.put("spans", note.spans);
+                values.put("mindmap", note.mindmap ? 1 : 0);
                 db.insertOrThrow("notes", null, values);
             });
             db.setTransactionSuccessful();

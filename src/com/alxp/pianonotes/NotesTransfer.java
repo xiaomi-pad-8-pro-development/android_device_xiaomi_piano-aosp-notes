@@ -24,7 +24,11 @@ final class NotesTransfer {
     private static final String FORMAT = "org.lineageos.pianonotes.backup";
     private static final String MANIFEST_ENTRY = "manifest.json";
     private static final String NOTES_ENTRY = "notes.ndjson";
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
+    /** Version 3 adds mind maps and the attachments folder. */
+    private static final int OLDEST_VERSION = 2;
+    private static final String ATTACHMENT_PREFIX = "attachments/";
+    private static final long MAX_ATTACHMENT_BYTES = 512L * 1024 * 1024;
     private static final int MAX_NOTES_BYTES = 64 * 1024 * 1024;
     private static final int MAX_MANIFEST_BYTES = 64 * 1024;
     private static final int MAX_NOTES = 50_000;
@@ -58,8 +62,19 @@ final class NotesTransfer {
                         if (count[0] > 1) writer.write('\n');
                         writer.write(toJson(note).toString());
                     });
+                    writer.flush();
+                    zip.closeEntry();
+                    // Pictures and recordings, with their bookmark files.
+                    java.io.File[] files = Attachments.folder(context).listFiles();
+                    if (files != null) {
+                        for (java.io.File file : files) {
+                            if (!file.isFile()) continue;
+                            zip.putNextEntry(new ZipEntry(ATTACHMENT_PREFIX + file.getName()));
+                            java.nio.file.Files.copy(file.toPath(), zip);
+                            zip.closeEntry();
+                        }
+                    }
                 }
-                zip.closeEntry();
             }
         }
     }
@@ -77,7 +92,8 @@ final class NotesTransfer {
                 JSONObject manifest = new JSONObject(new String(
                         readBounded(zip, MAX_MANIFEST_BYTES), StandardCharsets.UTF_8));
                 if (!FORMAT.equals(manifest.optString("format"))
-                        || manifest.optInt("version", -1) != VERSION
+                        || manifest.optInt("version", -1) < OLDEST_VERSION
+                        || manifest.optInt("version", -1) > VERSION
                         || manifest.optLong("exported_at", -1) < 0) {
                     throw new IOException("This Notes backup format is not supported.");
                 }
@@ -101,8 +117,27 @@ final class NotesTransfer {
                         consumer.accept(parseNote(line));
                     }
                     zip.closeEntry();
-                    if (zip.getNextEntry() != null) {
-                        throw new IOException("The backup contains unexpected files.");
+                    long total = 0;
+                    for (ZipEntry entry; (entry = zip.getNextEntry()) != null; ) {
+                        String name = entry.getName();
+                        String file = name.startsWith(ATTACHMENT_PREFIX)
+                                ? name.substring(ATTACHMENT_PREFIX.length()) : "";
+                        if (entry.isDirectory() || !file.matches("[A-Za-z0-9._-]+")
+                                || file.startsWith(".")) {
+                            throw new IOException("The backup contains unexpected files.");
+                        }
+                        try (OutputStream out = new java.io.FileOutputStream(
+                                Attachments.file(context, file))) {
+                            byte[] buffer = new byte[64 * 1024];
+                            for (int n; (n = zip.read(buffer)) > 0; ) {
+                                total += n;
+                                if (total > MAX_ATTACHMENT_BYTES) {
+                                    throw new IOException("The backup's attachments are too large.");
+                                }
+                                out.write(buffer, 0, n);
+                            }
+                        }
+                        zip.closeEntry();
                     }
                 });
                 return count[0];
@@ -118,6 +153,7 @@ final class NotesTransfer {
         item.put("ink_json", note.inkJson);
         item.put("updated", note.updated);
         item.put("spans", note.spans);
+        if (note.mindmap) item.put("mindmap", true);
         return item;
     }
 
@@ -131,10 +167,14 @@ final class NotesTransfer {
         if (title.length() > 100_000 || updated < 0) {
             throw new IOException("The backup contains invalid note data.");
         }
+        boolean mindmap = item.optBoolean("mindmap", false);
         if (ink) validateInk(inkJson);
+        else if (mindmap) new JSONObject(inkJson);
         else if (!inkJson.isEmpty()) throw new IOException("The backup contains invalid note data.");
-        return new NoteStore.Note(-1, title, body, ink, inkJson, updated,
+        NoteStore.Note note = new NoteStore.Note(-1, title, body, ink, inkJson, updated,
                 item.optString("spans", ""));
+        note.mindmap = mindmap;
+        return note;
     }
 
     private static byte[] readBounded(InputStream input, int maxBytes) throws IOException {
