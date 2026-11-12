@@ -87,7 +87,6 @@ public final class NotesActivity extends Activity {
     private FrameLayout screen;
     /** Where the editor is built: the whole screen, or the right pane on a tablet. */
     private LinearLayout editorHost;
-    private LinearLayout editorPane;
     private MaterialToolbar toolbar;
     private long noteId = -1;
     private EditText title;
@@ -167,6 +166,8 @@ public final class NotesActivity extends Activity {
             if (note != null) openNote(note);
             else if (restoredDrawing) editInk(null);
             else edit(null);
+            if (ink != null) ink.showPage(Math.min(state.getInt("ink_page", 0),
+                    ink.pageCount() - 1));
         } else if (tasksTab) {
             showTasks();
         } else {
@@ -215,12 +216,18 @@ public final class NotesActivity extends Activity {
         state.putBoolean(STATE_EDITOR, title != null);
         state.putLong(STATE_NOTE_ID, noteId);
         state.putBoolean(STATE_DRAWING, drawing);
+        if (ink != null) state.putInt("ink_page", ink.currentPage());
         state.putInt(STATE_LIST_SCROLL, noteListScroll == null
                 ? listScrollY : noteListScroll.getScrollY());
         state.putString(STATE_FILTER, activeFilter);
         state.putString(STATE_SEARCH, searchQuery);
         state.putBoolean(STATE_TASKS, tasksTab && title == null);
         super.onSaveInstanceState(state);
+    }
+
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (ink != null && ink.handleStylusKey(event)) return true;
+        return super.dispatchKeyEvent(event);
     }
 
     private void base(String heading) {
@@ -232,7 +239,6 @@ public final class NotesActivity extends Activity {
         screen.addView(root, new FrameLayout.LayoutParams(-1, -1));
         setContentView(screen);
         editorHost = root;
-        editorPane = null;
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
             Insets bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars()
@@ -299,6 +305,40 @@ public final class NotesActivity extends Activity {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, dp(12), 0, dp(24));
+        TextInputLayout searchLayout = new TextInputLayout(this);
+        searchLayout.setHint("Search notes");
+        searchLayout.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);
+        searchLayout.setBoxCornerRadii(dp(24), dp(24), dp(24), dp(24));
+        TextInputEditText search = new TextInputEditText(this);
+        search.setSingleLine(true);
+        search.setText(searchQuery);
+        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        search.setInputType(InputType.TYPE_CLASS_TEXT);
+        search.setOnEditorActionListener((view, action, event) -> {
+            if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+                    && (event == null || event.getKeyCode() != android.view.KeyEvent.KEYCODE_ENTER
+                    || event.getAction() != android.view.KeyEvent.ACTION_DOWN)) return false;
+            searchQuery = search.getText().toString().trim();
+            listScrollY = 0;
+            android.view.inputmethod.InputMethodManager keyboard =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (keyboard != null) keyboard.hideSoftInputFromWindow(search.getWindowToken(), 0);
+            showList();
+            return true;
+        });
+        searchLayout.addView(search, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(-1, -2);
+        searchLp.setMargins(dp(4), 0, dp(4), dp(12));
+        content.addView(searchLayout, searchLp);
+        if (!searchQuery.isEmpty()) {
+            MaterialButton clearSearch = button("Clear search");
+            clearSearch.setOnClickListener(v -> {
+                searchQuery = "";
+                showList();
+            });
+            content.addView(clearSearch, new LinearLayout.LayoutParams(-2, dp(44)));
+        }
+
 
         com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton fab =
                 new com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton(this);
@@ -336,26 +376,57 @@ public final class NotesActivity extends Activity {
         if (activeFilter.startsWith(FOLDER_PREFIX) && !categories.contains(activeFilter)) {
             activeFilter = "All";
         }
+        boolean folderHeadingAdded = false;
+        int manageSectionIndex = -1;
         for (String category : categories) {
+            if (wide && !folderHeadingAdded && category.startsWith(FOLDER_PREFIX)) {
+                TextView headingView = textView("NOTEBOOKS", 12,
+                        materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                                Color.GRAY));
+                headingView.setLetterSpacing(.08f);
+                headingView.setPadding(dp(16), dp(24), dp(12), dp(10));
+                chipRow.addView(headingView, new LinearLayout.LayoutParams(-1, -2));
+                folderHeadingAdded = true;
+            }
+            if (wide && category.equals(FILTER_HIDDEN)) {
+                manageSectionIndex = chipRow.getChildCount();
+                TextView utilityHeading = textView("MANAGE", 12,
+                        materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
+                                Color.GRAY));
+                utilityHeading.setLetterSpacing(.08f);
+                utilityHeading.setPadding(dp(16), dp(24), dp(12), dp(10));
+                chipRow.addView(utilityHeading, new LinearLayout.LayoutParams(-1, -2));
+            }
             NoteStore.Folder folder = folderFor(folders, category);
             MaterialButton chip = button(folder != null ? folder.name : label(category));
-            if (wide) chip.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            if (wide) {
+                chip.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+                chip.setIconResource(folder != null ? R.drawable.ic_folder_24
+                        : category.equals(FILTER_PINNED) ? R.drawable.ic_pin_24
+                        : category.equals(FILTER_TRASH) ? R.drawable.ic_trash_24
+                        : category.equals(FILTER_HIDDEN) ? R.drawable.ic_lock_24
+                        : category.equals("Handwriting") ? R.drawable.ic_draw_24
+                        : R.drawable.ic_notes_24);
+                chip.setIconSize(dp(22));
+                chip.setIconPadding(dp(16));
+            }
             if (folder != null) {
                 chip.setOnLongClickListener(v -> { editFolder(folder); return true; });
             }
             chip.setCheckable(true);
             chip.setChecked(activeFilter.equals(category));
-            chip.setCornerRadius(dp(22));
+            chip.setCornerRadius(dp(wide ? 14 : 22));
             chip.setStrokeWidth(0);
             chip.setBackgroundTintList(ColorStateList.valueOf(activeFilter.equals(category)
                     ? materialColor(com.google.android.material.R.attr.colorPrimaryContainer,
                             0xffe8e1f2)
+                    : wide ? Color.TRANSPARENT
                     : materialColor(com.google.android.material.R.attr.colorSurfaceContainerHigh,
                             0xffece8f0)));
             chip.setTextColor(materialColor(activeFilter.equals(category)
                     ? com.google.android.material.R.attr.colorOnPrimaryContainer
                     : com.google.android.material.R.attr.colorOnSurfaceVariant, 0xff544575));
-            LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(wide ? -1 : -2, dp(44));
+            LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(wide ? -1 : -2, dp(wide ? 48 : 44));
             if (wide) chipLp.setMargins(0, dp(2), dp(12), dp(2));
             else chipLp.setMargins(dp(4), dp(14), dp(6), dp(2));
             chipRow.addView(chip, chipLp);
@@ -368,36 +439,36 @@ public final class NotesActivity extends Activity {
                 showList();
             });
         }
-        MaterialButton newFolder = button(wide ? "+ New folder" : "+ Folder");
+        MaterialButton newFolder = button(wide ? "New notebook" : "+ Folder");
         newFolder.setCornerRadius(dp(22));
         setTonalButton(newFolder);
         LinearLayout.LayoutParams newFolderLp = new LinearLayout.LayoutParams(wide ? -1 : -2, dp(44));
         if (wide) newFolderLp.setMargins(0, dp(10), dp(12), dp(2));
         else newFolderLp.setMargins(dp(4), dp(14), dp(6), dp(2));
-        chipRow.addView(newFolder, newFolderLp);
+        chipRow.addView(newFolder, wide ? manageSectionIndex : -1, newFolderLp);
         newFolder.setOnClickListener(v -> editFolder(null));
         ScrollView scroll = new ScrollView(this);
         noteListScroll = scroll;
         scroll.setClipToPadding(false);
         FrameLayout frame = new FrameLayout(this);
         if (wide) {
-            // Folders | note list | open note, like Xiaomi Notes on a tablet.
+            // Keep folders beside the library; notes open on a dedicated page.
             LinearLayout panes = new LinearLayout(this);
             panes.setOrientation(LinearLayout.HORIZONTAL);
             root.addView(panes, new LinearLayout.LayoutParams(-1, 0, 1));
             ScrollView sidebar = new ScrollView(this);
+            sidebar.setFillViewport(true);
+            sidebar.setClipToPadding(false);
+            sidebar.setPadding(dp(12), dp(8), 0, dp(16));
+            android.graphics.drawable.GradientDrawable sidebarSurface =
+                    new android.graphics.drawable.GradientDrawable();
+            sidebarSurface.setCornerRadius(dp(24));
+            sidebarSurface.setColor(materialColor(
+                    com.google.android.material.R.attr.colorSurfaceContainerLow, 0xfff1edf5));
+            sidebar.setBackground(sidebarSurface);
             sidebar.addView(chipRow, new ScrollView.LayoutParams(-1, -2));
             panes.addView(sidebar, new LinearLayout.LayoutParams(dp(240), -1));
             panes.addView(scroll, new LinearLayout.LayoutParams(0, -1, 1));
-            editorPane = new LinearLayout(this);
-            editorPane.setOrientation(LinearLayout.VERTICAL);
-            editorPane.setPadding(dp(16), 0, 0, 0);
-            panes.addView(editorPane, new LinearLayout.LayoutParams(0, -1, 1.4f));
-            TextView placeholder = textView("Select a note, or tap New note", 16,
-                    materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
-                            Color.GRAY));
-            placeholder.setGravity(Gravity.CENTER);
-            editorPane.addView(placeholder, new LinearLayout.LayoutParams(-1, -1));
         } else {
             filters.addView(chipRow);
             content.addView(filters, new LinearLayout.LayoutParams(-1, -2));
@@ -422,8 +493,12 @@ public final class NotesActivity extends Activity {
                     java.util.Locale.ROOT))) continue;
             visibleNotes.add(note);
         }
+        NoteStore.Folder selectedFolder = folderFor(folders, activeFilter);
         String sectionName = activeFilter.equals(FILTER_TRASH)
-                ? "TRASH · DELETED AFTER 30 DAYS" : "RECENT NOTES";
+                ? "TRASH · DELETED AFTER 30 DAYS"
+                : selectedFolder != null ? selectedFolder.name
+                : activeFilter.equals("All") ? "RECENT NOTES" : label(activeFilter);
+        if (!searchQuery.isEmpty()) sectionName = "Search results · " + sectionName;
         if (visibleNotes.isEmpty()) {
             TextView section = textView(sectionName, 12,
                     materialColor(com.google.android.material.R.attr.colorOnSurfaceVariant,
@@ -508,32 +583,18 @@ public final class NotesActivity extends Activity {
             case "All": return "All notes";
             case FILTER_UNCATEGORIZED: return "Uncategorized";
             case FILTER_TRASH: return "Recently deleted";
-            case FILTER_HIDDEN: return "🔒 Hidden notes";
+            case FILTER_HIDDEN: return "Hidden notes";
             default: return category;
         }
     }
 
-    /** Clears the screen or the tablet's note pane for the editor. */
+    /** Opens a dedicated page so tablet notes have the full writing area. */
     private void openEditor(String heading) {
-        if (!isWide()) {
-            base(heading);
-            return;
-        }
-        long keep = noteId;
-        boolean keepDrawing = drawing;
-        showList();
-        noteId = keep;
-        drawing = keepDrawing;
-        editorPane.removeAllViews();
-        editorHost = editorPane;
-        toolbar = new MaterialToolbar(this);
-        toolbar.setTitle(heading);
-        toolbar.setBackgroundColor(Color.TRANSPARENT);
-        editorHost.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
+        base(heading);
     }
 
     private int editorWidth() {
-        return editorHost == root ? contentWidth() : -1;
+        return -1;
     }
 
     private long currentFolder() {
@@ -1094,6 +1155,20 @@ public final class NotesActivity extends Activity {
     }
 
     private void editInk(NoteStore.Note note) {
+        if (note != null) {
+            try {
+                for (JSONArray page : InkDocument.read(note.inkJson))
+                    for (int i = 0; i < page.length(); i++) InkView.Stroke.fromJson(page.get(i));
+            } catch (JSONException | IllegalArgumentException failure) {
+                showList();
+                new MaterialAlertDialogBuilder(this)
+                        .setTitle("Cannot open handwriting")
+                        .setMessage("This note contains unreadable or unsupported ink data. "
+                                + "Its saved content has been preserved.")
+                        .setPositiveButton(android.R.string.ok, null).show();
+                return;
+            }
+        }
         rememberListPosition();
         drawing = true;
         mindMap = null;
@@ -1689,7 +1764,7 @@ public final class NotesActivity extends Activity {
 
     private void chooseShareKind() {
         saveCurrent();
-        String[] kinds = drawing ? new String[]{"Picture", "PDF"}
+        String[] kinds = drawing ? new String[]{"Picture · current page", "PDF · all pages"}
                 : new String[]{"Picture", "PDF", "Markdown"};
         new MaterialAlertDialogBuilder(this)
                 .setTitle("Export note")
@@ -1714,6 +1789,8 @@ public final class NotesActivity extends Activity {
                 android.text.Spanned text = body != null ? body.getText()
                         : new android.text.SpannableString(mindMap != null ? mindMap.outline() : "");
                 NoteExport.writeMarkdown(heading, text, out);
+            } else if (drawing && pendingShareKind == NoteExport.PDF) {
+                NoteExport.writeInkPdf(ink, out);
             } else {
                 android.graphics.Bitmap picture = drawing ? NoteExport.renderView(ink)
                         : mindMap != null ? NoteExport.renderView(mindMap)

@@ -24,8 +24,8 @@ final class NotesTransfer {
     private static final String FORMAT = "org.lineageos.pianonotes.backup";
     private static final String MANIFEST_ENTRY = "manifest.json";
     private static final String NOTES_ENTRY = "notes.ndjson";
-    private static final int VERSION = 3;
-    /** Version 3 adds mind maps and the attachments folder. */
+    private static final int VERSION = 4;
+    /** Version 4 adds multi-page ink; readers retain versions 2 and 3. */
     private static final int OLDEST_VERSION = 2;
     private static final String ATTACHMENT_PREFIX = "attachments/";
     private static final long MAX_ATTACHMENT_BYTES = 512L * 1024 * 1024;
@@ -191,30 +191,33 @@ final class NotesTransfer {
     }
 
     private static void validateInk(String json) throws IOException, JSONException {
-        org.json.JSONArray strokes = new org.json.JSONArray(json);
-        if (strokes.length() > MAX_STROKES_PER_NOTE) {
-            throw new IOException("The backup contains too many ink strokes.");
-        }
         int pointCount = 0;
-        for (int i = 0; i < strokes.length(); i++) {
-            // Strokes are point arrays, or objects with the pen and its points.
-            Object stroke = strokes.get(i);
-            org.json.JSONArray points = stroke instanceof JSONObject
-                    ? ((JSONObject) stroke).getJSONArray("pts") : strokes.getJSONArray(i);
-            pointCount += points.length();
-            if (pointCount > MAX_POINTS_PER_NOTE) {
-                throw new IOException("The backup contains too many ink points.");
-            }
-            for (int j = 0; j < points.length(); j++) {
-                JSONObject point = points.getJSONObject(j);
-                double x = point.getDouble("x");
-                double y = point.getDouble("y");
-                double pressure = point.getDouble("p");
-                if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(pressure)
-                        || x < 0 || x > InkView.PAGE_WIDTH
-                        || y < 0 || y > InkView.PAGE_HEIGHT
-                        || pressure < 0) {
-                    throw new IOException("The backup contains invalid ink data.");
+        int strokeCount = 0;
+        for (org.json.JSONArray strokes : InkDocument.read(json)) {
+            strokeCount += strokes.length();
+            if (strokeCount > MAX_STROKES_PER_NOTE)
+                throw new IOException("The backup contains too many ink strokes.");
+            for (int i = 0; i < strokes.length(); i++) {
+                // Strokes are point arrays, or objects with the pen and its points.
+                Object stroke = strokes.get(i);
+                InkView.Stroke.fromJson(stroke);
+                org.json.JSONArray points = stroke instanceof JSONObject
+                        ? ((JSONObject) stroke).getJSONArray("pts") : strokes.getJSONArray(i);
+                pointCount += points.length();
+                if (pointCount > MAX_POINTS_PER_NOTE) {
+                    throw new IOException("The backup contains too many ink points.");
+                }
+                for (int j = 0; j < points.length(); j++) {
+                    JSONObject point = points.getJSONObject(j);
+                    double x = point.getDouble("x");
+                    double y = point.getDouble("y");
+                    double pressure = point.getDouble("p");
+                    if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(pressure)
+                            || x < 0 || x > InkView.PAGE_WIDTH
+                            || y < 0 || y > InkView.PAGE_HEIGHT
+                            || pressure < 0) {
+                        throw new IOException("The backup contains invalid ink data.");
+                    }
                 }
             }
         }

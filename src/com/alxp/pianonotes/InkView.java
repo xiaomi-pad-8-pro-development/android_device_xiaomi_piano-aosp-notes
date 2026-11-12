@@ -39,8 +39,83 @@ final class InkView extends View {
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final List<Stroke> strokes = new ArrayList<>();
-    private final List<String> undo = new ArrayList<>();
-    private final List<String> redo = new ArrayList<>();
+    private final List<JSONArray> pages = new ArrayList<>(
+            java.util.Collections.singletonList(new JSONArray()));
+    private int pageIndex;
+    private Runnable pageStateListener;
+
+    void setPageStateListener(Runnable listener) {
+        pageStateListener = listener;
+        if (listener != null) listener.run();
+    }
+
+    int pageCount() { return pages.size(); }
+    int currentPage() { return pageIndex; }
+
+    void showPage(int index) {
+        if (index < 0 || index >= pages.size() || index == pageIndex) return;
+        if (activePointerId != MotionEvent.INVALID_POINTER_ID) end();
+        serialize();
+        pageIndex = index;
+        loadPage();
+        clearSelection();
+        fitPage();
+        if (pageStateListener != null) pageStateListener.run();
+    }
+
+    void addPage() {
+        if (pages.size() >= InkDocument.MAX_PAGES) return;
+        if (activePointerId != MotionEvent.INVALID_POINTER_ID) end();
+        snapshot();
+        pages.add(new JSONArray());
+        pageIndex = pages.size() - 1;
+        loadPage();
+        clearSelection();
+        fitPage();
+        changed();
+    }
+
+    void duplicatePage() {
+        if (pages.size() >= InkDocument.MAX_PAGES) return;
+        if (activePointerId != MotionEvent.INVALID_POINTER_ID) end();
+        snapshot();
+        try {
+            pages.add(pageIndex + 1, new JSONArray(pages.get(pageIndex).toString()));
+        } catch (JSONException e) { throw new IllegalStateException(e); }
+        pageIndex++;
+        loadPage();
+        clearSelection();
+        fitPage();
+        changed();
+    }
+
+    void deletePage() {
+        if (activePointerId != MotionEvent.INVALID_POINTER_ID) end();
+        snapshot();
+        pages.remove(pageIndex);
+        if (pages.isEmpty()) pages.add(new JSONArray());
+        pageIndex = Math.min(pageIndex, pages.size() - 1);
+        loadPage();
+        clearSelection();
+        fitPage();
+        changed();
+    }
+
+    private void loadPage() {
+        strokes.clear();
+        active = null;
+        JSONArray array = pages.get(pageIndex);
+        try {
+            for (int i = 0; i < array.length(); i++) strokes.add(Stroke.fromJson(array.get(i)));
+        } catch (JSONException e) { throw new IllegalStateException("Invalid ink page", e); }
+    }
+    private static final class History {
+        final String document;
+        final int page;
+        History(String document, int page) { this.document = document; this.page = page; }
+    }
+    private final List<History> undo = new ArrayList<>();
+    private final List<History> redo = new ArrayList<>();
     private final Runnable onChanged;
     private final int pageColor;
     private final int themeInk;
@@ -52,6 +127,60 @@ final class InkView extends View {
     private Mode mode = Mode.DRAW;
     private float eraserRadius = 22f;
     private boolean ruler;
+    private float zoom = 1f, panX, panY;
+    private boolean navigating;
+    private float navSpan, navX, navY;
+
+    void fitPage() {
+        zoom = 1f;
+        panX = panY = 0;
+        invalidate();
+    }
+
+    private float rulerX = PAGE_WIDTH / 2f, rulerY = PAGE_HEIGHT / 2f;
+    private float rulerAngle;
+    private boolean movingRuler;
+    private float rulerGrabX, rulerGrabY, rulerGestureAngle, rulerStartAngle;
+    private boolean rotatingRuler;
+    private boolean rulerStroke;
+    private boolean stylusOnly;
+    private boolean autoPenInput;
+    private boolean stylusDetected;
+    private boolean barrelEraser;
+    private boolean pressureEnabled = true;
+    void setPressureEnabled(boolean enabled) { pressureEnabled = enabled; }
+    private Runnable penSettingsAction, penColorAction;
+
+    void setPenActions(Runnable settings, Runnable color) {
+        penSettingsAction = settings;
+        penColorAction = color;
+    }
+
+    boolean handleStylusKey(android.view.KeyEvent event) {
+        int code = event.getKeyCode();
+        if (code != 194 && code != 195) return false;
+        // AOSP may omit Xiaomi settings; use local tool/color defaults in that case.
+        String setting = code == 194 ? "stylus_pinch_status" : "stylus_double_click_status";
+        int action = android.provider.Settings.System.getInt(
+                getContext().getContentResolver(), setting, code == 194 ? 4 : 3);
+        Runnable callback = action == 4 ? penSettingsAction : action == 3 ? penColorAction : null;
+        if (callback == null) return false;
+        if (event.getAction() == android.view.KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+            callback.run();
+        return true;
+    }
+    private int paperPattern;
+
+    void setPaperPattern(int pattern) {
+        paperPattern = pattern;
+        invalidate();
+    }
+
+    void setInputMode(int mode) {
+        stylusOnly = mode == 1;
+        autoPenInput = mode == 2;
+    }
+
     private IntConsumer onColorPicked;
 
     private Stroke active;
@@ -107,6 +236,9 @@ final class InkView extends View {
 
     void setRuler(boolean on) {
         ruler = on;
+        movingRuler = false;
+        rotatingRuler = false;
+        invalidate();
     }
 
     boolean ruler() {
@@ -153,6 +285,7 @@ final class InkView extends View {
         canvas.translate(pageLeft(), pageTop());
         canvas.scale(scale, scale);
         drawPage(canvas);
+        if (ruler) drawRuler(canvas);
         if (lasso != null || selectionBounds != null) {
             paint.reset();
             paint.setAntiAlias(true);
@@ -168,11 +301,74 @@ final class InkView extends View {
         canvas.restore();
     }
 
+    private void drawRuler(Canvas canvas) {
+        canvas.save();
+        canvas.translate(rulerX, rulerY);
+        canvas.rotate((float) Math.toDegrees(rulerAngle));
+        paint.reset();
+        paint.setAntiAlias(true);
+        paint.setColor(0x99b8c9da);
+        canvas.drawRoundRect(-400, 0, 400, 80, 8, 8, paint);
+        paint.setColor(themeInk);
+        paint.setStrokeWidth(1.5f);
+        paint.setTextSize(18);
+        for (int i = 0; i <= 80; i++) {
+            float x = -400 + i * 10;
+            canvas.drawLine(x, 0, x, i % 10 == 0 ? 30 : i % 5 == 0 ? 22 : 12, paint);
+            if (i % 10 == 0) canvas.drawText(Integer.toString(i / 10), x + 3, 52, paint);
+        }
+        float degrees = (float) Math.toDegrees(rulerAngle) % 360f;
+        if (degrees < 0) degrees += 360f;
+        paint.setTextSize(16);
+        paint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText(Math.round(degrees) + "°", 0, 72, paint);
+        canvas.restore();
+    }
+
+    /** Renders document content without ruler or selection overlays. */
+    void drawDocument(Canvas canvas) {
+        drawPage(canvas);
+    }
+
+    void drawDocumentPage(Canvas canvas, int index) {
+        serialize();
+        List<Stroke> saved = new ArrayList<>(strokes);
+        Stroke savedActive = active;
+        try {
+            strokes.clear();
+            active = null;
+            JSONArray page = pages.get(index);
+            for (int i = 0; i < page.length(); i++) strokes.add(Stroke.fromJson(page.get(i)));
+            drawPage(canvas);
+        } catch (JSONException e) {
+            throw new IllegalStateException("Invalid ink page", e);
+        } finally {
+            strokes.clear();
+            strokes.addAll(saved);
+            active = savedActive;
+        }
+    }
+
     private void drawPage(Canvas canvas) {
         paint.reset();
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(pageColor);
         canvas.drawRect(0, 0, PAGE_WIDTH, PAGE_HEIGHT, paint);
+        if (paperPattern != 0) {
+            paint.setColor(themeInk);
+            paint.setAlpha(35);
+            paint.setStrokeWidth(1);
+            for (float y = 40; y < PAGE_HEIGHT; y += 40) {
+                if (paperPattern == 3) {
+                    for (float x = 40; x < PAGE_WIDTH; x += 40)
+                        canvas.drawCircle(x, y, 1.8f, paint);
+                } else canvas.drawLine(0, y, PAGE_WIDTH, y, paint);
+            }
+            if (paperPattern == 2) {
+                for (float x = 40; x < PAGE_WIDTH; x += 40)
+                    canvas.drawLine(x, 0, x, PAGE_HEIGHT, paint);
+            }
+        }
         for (Stroke stroke : strokes) drawStroke(canvas, stroke);
         if (active != null) drawStroke(canvas, active);
     }
@@ -225,6 +421,7 @@ final class InkView extends View {
 
     private void drawPressureStroke(Canvas canvas, Stroke stroke, int ink, int strokeAlpha,
             float pressureWeight) {
+        if (!stroke.pressureEnabled) pressureWeight = 0;
         paint.setColor(ink);
         paint.setAlpha(strokeAlpha);
         paint.setStyle(Paint.Style.STROKE);
@@ -244,22 +441,141 @@ final class InkView extends View {
 
     // --- Touch ----------------------------------------------------------------
 
+    @Override public boolean onHoverEvent(MotionEvent event) {
+        int tool = event.getToolType(0);
+        if (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER)
+            stylusDetected = true;
+        return super.onHoverEvent(event);
+    }
+
     @Override public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         int index = event.getActionIndex();
+        int incomingTool = event.getToolType(index);
+        if (!movingRuler && event.getPointerCount() == 2
+                && event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER
+                && event.getToolType(1) == MotionEvent.TOOL_TYPE_FINGER
+                && (activePointerId == MotionEvent.INVALID_POINTER_ID
+                    || activeToolType == MotionEvent.TOOL_TYPE_FINGER)) {
+            float cx = (event.getX(0) + event.getX(1)) / 2f;
+            float cy = (event.getY(0) + event.getY(1)) / 2f;
+            float span = (float) Math.hypot(event.getX(1) - event.getX(0),
+                    event.getY(1) - event.getY(0));
+            if (!navigating) {
+                boolean ownsSnapshot = active != null || erasingGesture || dragging;
+                if (ownsSnapshot && !undo.isEmpty()) load(undo.remove(undo.size() - 1));
+                active = null;
+                activePointerId = MotionEvent.INVALID_POINTER_ID;
+                activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+                erasingGesture = false;
+                changedInGesture = false;
+                dragging = false;
+                clearSelection();
+                lasso = null;
+                navigating = true;
+                invalidate();
+            } else if (action == MotionEvent.ACTION_MOVE && navSpan > 0) {
+                float oldScale = pageScale();
+                float px = (navX - pageLeft()) / oldScale;
+                float py = (navY - pageTop()) / oldScale;
+                zoom = Math.max(1f, Math.min(6f, zoom * span / navSpan));
+                panX += cx - (pageLeft() + px * pageScale());
+                panY += cy - (pageTop() + py * pageScale());
+                constrainViewport();
+                invalidate();
+            }
+            navX = cx; navY = cy; navSpan = span;
+            if (action == MotionEvent.ACTION_POINTER_UP) navigating = false;
+            return true;
+        }
+        if (navigating) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                navigating = false;
+            return true;
+        }
+
+        if (incomingTool == MotionEvent.TOOL_TYPE_STYLUS
+                || incomingTool == MotionEvent.TOOL_TYPE_ERASER) stylusDetected = true;
+        if (movingRuler && action == MotionEvent.ACTION_POINTER_DOWN
+                && (incomingTool == MotionEvent.TOOL_TYPE_STYLUS
+                || incomingTool == MotionEvent.TOOL_TYPE_ERASER)) {
+            movingRuler = false;
+            rotatingRuler = false;
+        }
+        boolean penDrawing = activePointerId != MotionEvent.INVALID_POINTER_ID
+                && (activeToolType == MotionEvent.TOOL_TYPE_STYLUS
+                || activeToolType == MotionEvent.TOOL_TYPE_ERASER);
+        if (ruler && !penDrawing
+                && event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) {
+            float x = toPageX(event.getX(0)), y = toPageY(event.getY(0));
+            float dx = x - rulerX, dy = y - rulerY;
+            float localX = (float) (dx * Math.cos(rulerAngle) + dy * Math.sin(rulerAngle));
+            float localY = (float) (-dx * Math.sin(rulerAngle) + dy * Math.cos(rulerAngle));
+            if (action == MotionEvent.ACTION_DOWN) {
+                movingRuler = Math.abs(localX) <= 400 && localY >= 0 && localY <= 80;
+                rulerGrabX = x - rulerX;
+                rulerGrabY = y - rulerY;
+                rotatingRuler = false;
+            }
+            if (movingRuler) {
+                if (action == MotionEvent.ACTION_POINTER_UP) {
+                    int remaining = index == 0 ? 1 : 0;
+                    rulerGrabX = toPageX(event.getX(remaining)) - rulerX;
+                    rulerGrabY = toPageY(event.getY(remaining)) - rulerY;
+                    rotatingRuler = false;
+                    invalidate();
+                    return true;
+                }
+                if (event.getPointerCount() >= 2) {
+                    float angle = (float) Math.atan2(event.getY(1) - event.getY(0),
+                            event.getX(1) - event.getX(0));
+                    if (!rotatingRuler) {
+                        rulerGestureAngle = angle;
+                        rulerStartAngle = rulerAngle;
+                        rotatingRuler = true;
+                    }
+                    rulerAngle = rulerStartAngle + angle - rulerGestureAngle;
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    if (rotatingRuler) {
+                        rulerGrabX = x - rulerX;
+                        rulerGrabY = y - rulerY;
+                        rotatingRuler = false;
+                    }
+                    rulerX = Math.max(0, Math.min(PAGE_WIDTH, x - rulerGrabX));
+                    rulerY = Math.max(0, Math.min(PAGE_HEIGHT - 80, y - rulerGrabY));
+                }
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                    movingRuler = false;
+                invalidate();
+                return true;
+            }
+        }
+
         if (action == MotionEvent.ACTION_DOWN) {
             if (!insidePage(event.getX(0), event.getY(0))) return false;
-            begin(event, 0);
+            if (!(stylusOnly || (autoPenInput && stylusDetected))
+                    || event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER)
+                begin(event, 0);
             return true;
         }
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
             int toolType = event.getToolType(index);
             // A stylus that lands while a palm or finger is down takes over.
-            if (activeToolType == MotionEvent.TOOL_TYPE_FINGER
+            if ((activeToolType == MotionEvent.TOOL_TYPE_FINGER
+                    || activePointerId == MotionEvent.INVALID_POINTER_ID)
                     && (toolType == MotionEvent.TOOL_TYPE_STYLUS
                     || toolType == MotionEvent.TOOL_TYPE_ERASER)
                     && insidePage(event.getX(index), event.getY(index))) {
-                if (active != null && !active.points.isEmpty()) strokes.add(active);
+                if (active != null && !active.points.isEmpty()) {
+                    if (autoPenInput) {
+                        // The first pen contact identifies the preceding finger ink as palm input.
+                        active = null;
+                        if (!undo.isEmpty()) undo.remove(undo.size() - 1);
+                    } else {
+                        strokes.add(active);
+                        changed();
+                    }
+                }
                 begin(event, index);
             }
             return true;
@@ -285,13 +601,16 @@ final class InkView extends View {
     }
 
     private Mode gestureMode(int toolType) {
-        if (toolType == MotionEvent.TOOL_TYPE_ERASER) return Mode.STROKE_ERASER;
+        if (toolType == MotionEvent.TOOL_TYPE_ERASER || barrelEraser)
+            return Mode.STROKE_ERASER;
         return mode;
     }
 
     private void begin(MotionEvent event, int index) {
         activePointerId = event.getPointerId(index);
         activeToolType = event.getToolType(index);
+        barrelEraser = activeToolType == MotionEvent.TOOL_TYPE_STYLUS
+                && (event.getButtonState() & MotionEvent.BUTTON_STYLUS_PRIMARY) != 0;
         float x = toPageX(event.getX(index));
         float y = toPageY(event.getY(index));
         Mode gesture = gestureMode(activeToolType);
@@ -328,6 +647,15 @@ final class InkView extends View {
         }
         snapshot();
         active = new Stroke(pen, color, width, alpha);
+        active.pressureEnabled = pressureEnabled;
+        float dx = x - rulerX, dy = y - rulerY;
+        float along = (float) (dx * Math.cos(rulerAngle) + dy * Math.sin(rulerAngle));
+        float distance = (float) (-dx * Math.sin(rulerAngle) + dy * Math.cos(rulerAngle));
+        rulerStroke = ruler && Math.abs(along) <= 420 && Math.abs(distance) <= 30;
+        if (rulerStroke) {
+            x = rulerX + along * (float) Math.cos(rulerAngle);
+            y = rulerY + along * (float) Math.sin(rulerAngle);
+        }
         active.points.add(new float[]{x, y, event.getPressure(index)});
         invalidate();
     }
@@ -355,14 +683,29 @@ final class InkView extends View {
             return;
         }
         if (active == null) return;
-        if (ruler && active.points.size() > 1) {
-            // Ruler: the stroke stays a straight line from its first point.
+        if (rulerStroke && active.points.size() > 1) {
+            // Keep just the endpoints of the stroke projected onto the ruler edge.
             active.points.subList(1, active.points.size()).clear();
+        }
+        if (rulerStroke) {
+            float along = (float) ((x - rulerX) * Math.cos(rulerAngle)
+                    + (y - rulerY) * Math.sin(rulerAngle));
+            x = rulerX + along * (float) Math.cos(rulerAngle);
+            y = rulerY + along * (float) Math.sin(rulerAngle);
+            if (!active.points.isEmpty()) {
+                float[] first = active.points.get(0);
+                float start = (float) ((first[0] - rulerX) * Math.cos(rulerAngle)
+                        + (first[1] - rulerY) * Math.sin(rulerAngle));
+                first[0] = rulerX + start * (float) Math.cos(rulerAngle);
+                first[1] = rulerY + start * (float) Math.sin(rulerAngle);
+            }
         }
         active.points.add(new float[]{x, y, pressure});
     }
 
     private void end() {
+        // Guide gestures and completed eyedropper taps own no document snapshot.
+        if (activePointerId == MotionEvent.INVALID_POINTER_ID) return;
         Mode gesture = gestureMode(activeToolType);
         if (gesture == Mode.LASSO) {
             if (!dragging && lasso != null) selectInside(lasso);
@@ -375,6 +718,7 @@ final class InkView extends View {
         active = null;
         activePointerId = MotionEvent.INVALID_POINTER_ID;
         activeToolType = MotionEvent.TOOL_TYPE_UNKNOWN;
+        barrelEraser = false;
         erasingGesture = false;
         if (changedInGesture) changed();
         else if (!undo.isEmpty() && gesture != Mode.LASSO) undo.remove(undo.size() - 1);
@@ -449,15 +793,27 @@ final class InkView extends View {
 
     private float pageScale() {
         if (getWidth() <= 0 || getHeight() <= 0) return 1f;
-        return Math.min(getWidth() / PAGE_WIDTH, getHeight() / PAGE_HEIGHT);
+        return zoom * Math.min(getWidth() / PAGE_WIDTH, getHeight() / PAGE_HEIGHT);
+    }
+
+    private void constrainViewport() {
+        float limitX = Math.max(0, (PAGE_WIDTH * pageScale() - getWidth()) / 2f);
+        float limitY = Math.max(0, (PAGE_HEIGHT * pageScale() - getHeight()) / 2f);
+        panX = Math.max(-limitX, Math.min(limitX, panX));
+        panY = Math.max(-limitY, Math.min(limitY, panY));
+    }
+
+    @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        constrainViewport();
     }
 
     private float pageLeft() {
-        return (getWidth() - PAGE_WIDTH * pageScale()) / 2f;
+        return panX + (getWidth() - PAGE_WIDTH * pageScale()) / 2f;
     }
 
     private float pageTop() {
-        return (getHeight() - PAGE_HEIGHT * pageScale()) / 2f;
+        return panY + (getHeight() - PAGE_HEIGHT * pageScale()) / 2f;
     }
 
     private boolean insidePage(float x, float y) {
@@ -477,19 +833,20 @@ final class InkView extends View {
     // --- History and storage --------------------------------------------------
 
     private void snapshot() {
-        undo.add(serialize());
+        undo.add(new History(serialize(), pageIndex));
         if (undo.size() > MAX_HISTORY) undo.remove(0);
         redo.clear();
     }
 
     private void changed() {
         invalidate();
+        if (pageStateListener != null) pageStateListener.run();
         onChanged.run();
     }
 
     void undo() {
         if (undo.isEmpty()) return;
-        redo.add(serialize());
+        redo.add(new History(serialize(), pageIndex));
         load(undo.remove(undo.size() - 1));
         clearSelection();
         changed();
@@ -497,7 +854,7 @@ final class InkView extends View {
 
     void redo() {
         if (redo.isEmpty()) return;
-        undo.add(serialize());
+        undo.add(new History(serialize(), pageIndex));
         load(redo.remove(redo.size() - 1));
         clearSelection();
         changed();
@@ -512,14 +869,19 @@ final class InkView extends View {
     }
 
     boolean hasInk() {
-        return !strokes.isEmpty() || active != null;
+        if (!strokes.isEmpty() || active != null || pages.size() > 1) return true;
+        for (int i = 0; i < pages.size(); i++)
+            if (i != pageIndex && pages.get(i).length() > 0) return true;
+        return false;
     }
 
     String serialize() {
         JSONArray array = new JSONArray();
         for (Stroke stroke : strokes) array.put(stroke.toJson());
         if (active != null && !active.points.isEmpty()) array.put(active.toJson());
-        return array.toString();
+        pages.set(pageIndex, array);
+        try { return InkDocument.write(pages); }
+        catch (JSONException e) { throw new IllegalStateException("Invalid ink document", e); }
     }
 
     void restore(String json) {
@@ -529,14 +891,24 @@ final class InkView extends View {
         invalidate();
     }
 
+    private void load(History history) {
+        pageIndex = history.page;
+        load(history.document);
+        fitPage();
+    }
+
     private void load(String json) {
-        strokes.clear();
-        active = null;
         try {
-            JSONArray array = new JSONArray(json);
-            for (int i = 0; i < array.length(); i++) strokes.add(Stroke.fromJson(array.get(i)));
-        } catch (JSONException ignored) {
-            // An unreadable page opens empty rather than crashing the editor.
+            List<JSONArray> decoded = InkDocument.read(json);
+            // Validate all pages before replacing any current document state.
+            for (JSONArray page : decoded)
+                for (int i = 0; i < page.length(); i++) Stroke.fromJson(page.get(i));
+            pages.clear();
+            pages.addAll(decoded);
+            pageIndex = Math.min(pageIndex, pages.size() - 1);
+            loadPage();
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Unreadable ink document", e);
         }
     }
 
@@ -555,6 +927,7 @@ final class InkView extends View {
         int color;
         float width;
         int alpha;
+        boolean pressureEnabled = true;
         final List<float[]> points = new ArrayList<>();
 
         Stroke(Pen pen, int color, float width, int alpha) {
@@ -565,7 +938,9 @@ final class InkView extends View {
         }
 
         Stroke copyStyle() {
-            return new Stroke(pen, color, width, alpha);
+            Stroke copy = new Stroke(pen, color, width, alpha);
+            copy.pressureEnabled = pressureEnabled;
+            return copy;
         }
 
         Path path() {
@@ -616,7 +991,7 @@ final class InkView extends View {
                     pts.put(new JSONObject().put("x", p[0]).put("y", p[1]).put("p", p[2]));
                 }
                 json.put("pen", pen.name()).put("c", color).put("w", width).put("a", alpha)
-                        .put("pts", pts);
+                        .put("pressure", pressureEnabled).put("pts", pts);
             } catch (JSONException ignored) {
                 // Only finite numbers and strings are written.
             }
@@ -639,12 +1014,20 @@ final class InkView extends View {
                 }
                 stroke = new Stroke(pen, json.optInt("c", 0), (float) json.optDouble("w", 4),
                         json.optInt("a", 255));
+                stroke.pressureEnabled = json.optBoolean("pressure", true);
                 pts = json.getJSONArray("pts");
             }
+            if (!Float.isFinite(stroke.width) || stroke.width <= 0
+                    || stroke.alpha < 0 || stroke.alpha > 255)
+                throw new JSONException("Invalid stroke style");
             for (int i = 0; i < pts.length(); i++) {
                 JSONObject p = pts.getJSONObject(i);
-                stroke.points.add(new float[]{(float) p.optDouble("x"), (float) p.optDouble("y"),
-                        (float) p.optDouble("p", 0.5)});
+                float x = (float) p.optDouble("x"), y = (float) p.optDouble("y");
+                float pressure = (float) p.optDouble("p", 0.5);
+                if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(pressure)
+                        || x < 0 || x > PAGE_WIDTH || y < 0 || y > PAGE_HEIGHT || pressure < 0)
+                    throw new JSONException("Invalid stroke point");
+                stroke.points.add(new float[]{x, y, pressure});
             }
             return stroke;
         }

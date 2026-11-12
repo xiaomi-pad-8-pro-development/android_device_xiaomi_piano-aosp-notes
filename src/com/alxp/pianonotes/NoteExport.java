@@ -68,11 +68,13 @@ final class NoteExport {
 
     /** Draws a view, such as a handwriting page, on white. */
     static Bitmap renderView(View view) {
-        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, view.getWidth()),
-                Math.max(1, view.getHeight()), Bitmap.Config.ARGB_8888);
+        Bitmap bitmap = Bitmap.createBitmap(view instanceof InkView ? (int) InkView.PAGE_WIDTH
+                : Math.max(1, view.getWidth()), view instanceof InkView ? (int) InkView.PAGE_HEIGHT
+                : Math.max(1, view.getHeight()), Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         canvas.drawColor(Color.WHITE);
-        view.draw(canvas);
+        if (view instanceof InkView) ((InkView) view).drawDocument(canvas);
+        else view.draw(canvas);
         return bitmap;
     }
 
@@ -112,6 +114,26 @@ final class NoteExport {
         } finally {
             document.close();
         }
+    }
+
+    static void writeInkPdf(InkView ink, OutputStream out) throws IOException {
+        PdfDocument document = new PdfDocument();
+        try {
+            float scale = Math.min((PAGE_WIDTH - 2f * MARGIN) / InkView.PAGE_WIDTH,
+                    (PAGE_HEIGHT - 2f * MARGIN) / InkView.PAGE_HEIGHT);
+            for (int i = 0; i < ink.pageCount(); i++) {
+                PdfDocument.Page page = document.startPage(new PdfDocument.PageInfo.Builder(
+                        PAGE_WIDTH, PAGE_HEIGHT, i + 1).create());
+                Canvas canvas = page.getCanvas();
+                canvas.save();
+                canvas.translate(MARGIN, MARGIN);
+                canvas.scale(scale, scale);
+                ink.drawDocumentPage(canvas, i);
+                canvas.restore();
+                document.finishPage(page);
+            }
+            document.writeTo(out);
+        } finally { document.close(); }
     }
 
     static void writeMarkdown(String title, Spanned body, OutputStream out) throws IOException {
