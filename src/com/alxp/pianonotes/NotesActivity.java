@@ -1763,10 +1763,17 @@ public final class NotesActivity extends Activity {
             String done = message;
             runOnUiThread(() -> {
                 transferRunning = false;
-                if (isDestroyed()) return;
+                NotesWidget.refresh(this);
+                if (isFinishing() || isDestroyed()) {
+                    // onDestroy left the store open for this import; close it now.
+                    if (store != null) {
+                        store.close();
+                        store = null;
+                    }
+                    return;
+                }
                 Toast.makeText(this, done, Toast.LENGTH_LONG).show();
                 if (title == null && !tasksTab) showList();
-                NotesWidget.refresh(this);
             });
         }, "xiaomi-import").start();
     }
