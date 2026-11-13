@@ -55,7 +55,7 @@ final class XiaomiImport {
             }
             try (SQLiteDatabase db = SQLiteDatabase.openDatabase(database.getPath(), null,
                     SQLiteDatabase.OPEN_READONLY)) {
-                return copy(db, store);
+                return copy(context, db, store);
             }
         } finally {
             database.delete();
@@ -130,7 +130,7 @@ final class XiaomiImport {
         }
     }
 
-    private static Result copy(SQLiteDatabase db, NoteStore store) {
+    private static Result copy(Context context, SQLiteDatabase db, NoteStore store) {
         Result result = new Result();
         Map<Long, Long> folders = new HashMap<>();
         try (Cursor cursor = db.rawQuery("SELECT _id, snippet FROM note WHERE type = ?",
@@ -178,7 +178,11 @@ final class XiaomiImport {
                 if (folder != null) store.moveToFolder(id, folder);
                 if (cursor.getLong(8) > 0) store.setPinned(id, true);
                 long alert = cursor.getLong(2);
-                if (alert > System.currentTimeMillis()) store.setReminder(id, alert);
+                if (alert > System.currentTimeMillis()) {
+                    store.setReminder(id, alert);
+                    // Boot rescheduling only runs after a reboot; arm it now.
+                    Reminders.schedule(context, id, alert);
+                }
                 store.setUpdated(id, cursor.getLong(3));
                 result.notes++;
             }
